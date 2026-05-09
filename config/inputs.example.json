@@ -1,0 +1,9 @@
+{
+  "inputs": [
+    { "code": "0x19", "name": "Thunderbolt" },
+    { "code": "0x0F", "name": "DisplayPort 1" },
+    { "code": "0x13", "name": "DisplayPort 2" },
+    { "code": "0x11", "name": "HDMI 1" },
+    { "code": "0x12", "name": "HDMI 2" }
+  ]
+}
