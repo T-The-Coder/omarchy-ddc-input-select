@@ -1,78 +1,168 @@
 #!/usr/bin/env bash
-# ddc-input-select — switch the active input on a Dell U5226KW via DDC/CI.
+# ddc-input-select — switch the active input on a DDC/CI monitor.
 #
 # Usage:
 #   ddc-input-select            # open picker (walker --dmenu), switch on selection
 #   ddc-input-select --current  # print current input as "<code>\t<name>"
-#   ddc-input-select --list     # print all configured inputs as "<code>\t<name>"
+#   ddc-input-select --list     # print all available inputs as "<code>\t<name>"
+#   ddc-input-select --detect   # print a config skeleton from the monitor itself
 #   ddc-input-select --help     # show this help
+#
+# The monitor is asked what inputs it has (VCP feature 0x60 in its capabilities
+# string), so no config is required. The config file is an optional overlay that
+# renames, reorders, and hides those inputs:
 #
 # Config: ${XDG_CONFIG_HOME:-$HOME/.config}/ddc-input-select/inputs.json
 # Schema: { "inputs": [ { "code": "0x13", "name": "Home Laptop", "hidden": false } ] }
 # Entries with "hidden": true are omitted from the picker but still resolved by --current.
+#
+# Seed one with: ddc-input-select --detect > ~/.config/ddc-input-select/inputs.json
+#
+# Set DDC_DISPLAY=N to target a specific display when you have more than one.
 
 set -euo pipefail
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ddc-input-select"
 CONFIG_FILE="$CONFIG_DIR/inputs.json"
-EXAMPLE_CONFIG="${DDC_INPUT_SELECT_EXAMPLE:-/usr/share/ddc-input-select/inputs.example.json}"
 VCP_INPUT_SOURCE="60"
+
+# ddcutil, optionally pinned to one display.
+ddc() {
+  if [[ -n "${DDC_DISPLAY:-}" ]]; then
+    ddcutil --display "$DDC_DISPLAY" "$@"
+  else
+    ddcutil "$@"
+  fi
+}
 
 die() { notify_err "$1"; echo "ddc-input-select: $1" >&2; exit 1; }
 
 notify_ok()  { command -v notify-send >/dev/null && notify-send "Monitor input" "$1" || true; }
 notify_err() { command -v notify-send >/dev/null && notify-send -u critical "Monitor input" "$1" || true; }
 
-ensure_config() {
-  if [[ -f "$CONFIG_FILE" ]]; then return; fi
-  mkdir -p "$CONFIG_DIR"
-  if [[ -f "$EXAMPLE_CONFIG" ]]; then
-    cp "$EXAMPLE_CONFIG" "$CONFIG_FILE"
-    echo "ddc-input-select: seeded $CONFIG_FILE from $EXAMPLE_CONFIG" >&2
-  else
-    die "no config at $CONFIG_FILE and no example at $EXAMPLE_CONFIG"
-  fi
-}
-
 # Normalize a hex code from ddcutil/config into lowercase 0x.. form for comparison.
 normalize_code() {
   local raw="${1,,}"
+  raw="${raw#sl=}"
   raw="${raw#0x}"
-  raw="${raw#sl=0x}"
+  raw="${raw#x}"
+  [[ "$raw" =~ ^[0-9a-f]+$ ]] || return 1
+  (( ${#raw} < 2 )) && raw="0$raw"
   printf '0x%s' "$raw"
 }
 
-list_inputs() {
-  jq -r '.inputs[] | select((.hidden // false) | not) | "\(.code)\t\(.name)"' "$CONFIG_FILE"
+# Names MCCS 2.x assigns to standard Input Source values. Monitors are free to
+# use codes outside this table — the Dell U5226KW uses 0x13 and 0x19 — so this
+# only labels what the monitor reports, it never decides what exists.
+default_name() {
+  case "$1" in
+    0x01) echo "VGA-1" ;;        0x02) echo "VGA-2" ;;
+    0x03) echo "DVI-1" ;;        0x04) echo "DVI-2" ;;
+    0x05) echo "Composite-1" ;;  0x06) echo "Composite-2" ;;
+    0x07) echo "S-Video-1" ;;    0x08) echo "S-Video-2" ;;
+    0x09) echo "Tuner-1" ;;      0x0a) echo "Tuner-2" ;;
+    0x0b) echo "Tuner-3" ;;      0x0c) echo "Component-1" ;;
+    0x0d) echo "Component-2" ;;  0x0e) echo "Component-3" ;;
+    0x0f) echo "DisplayPort-1" ;; 0x10) echo "DisplayPort-2" ;;
+    0x11) echo "HDMI-1" ;;       0x12) echo "HDMI-2" ;;
+    *)    echo "Input $1" ;;
+  esac
+}
+
+# Ask the monitor which inputs it has. The capabilities string carries them as
+# "…vcp(… 60( 19 0F 13 11 12) 62(0080) …)". We parse that raw string rather than
+# ddcutil's pretty output because the pretty form can contain raw non-UTF-8
+# bytes from unrelated features, which makes it unsafe to run through grep.
+# Matched with bash's own regex rather than a grep/head/sed pipeline: `head`
+# closing the pipe early sends SIGPIPE upstream, which under `set -o pipefail`
+# fails the whole assignment.
+detect_codes() {
+  local caps token code
+  caps=$(ddc capabilities --terse 2>/dev/null) || return 0
+  [[ "$caps" =~ (^|[[:space:]\(])60\(\ *([0-9a-fA-F][0-9a-fA-F\ ]*)\) ]] || return 0
+  for token in ${BASH_REMATCH[2]}; do
+    if code=$(normalize_code "$token"); then printf '%s\n' "$code"; fi
+  done
+}
+
+# Merge the monitor's list with the optional config overlay: config wins on
+# naming, ordering, and hiding; the monitor wins on what exists. Config entries
+# the monitor never reported are kept — capability strings do under-report — and
+# any input the config doesn't mention is appended under its standard name.
+# Prints "<code>\t<name>" per line. $1 = "all" to include hidden entries.
+merged_inputs() {
+  local include_hidden="${1:-}"
+  local -a detected=()
+  mapfile -t detected < <(detect_codes)
+
+  local -A seen=()
+  if [[ -f "$CONFIG_FILE" ]] && jq -e . "$CONFIG_FILE" >/dev/null 2>&1; then
+    local code name hidden
+    while IFS=$'\t' read -r code name hidden; do
+      code=$(normalize_code "$code") || continue
+      seen["$code"]=1
+      [[ "$hidden" == "true" && "$include_hidden" != "all" ]] && continue
+      [[ -n "$name" && "$name" != "null" ]] || name=$(default_name "$code")
+      printf '%s\t%s\n' "$code" "$name"
+    done < <(jq -r '.inputs[]? | "\(.code)\t\(.name // "")\t\(.hidden // false)"' "$CONFIG_FILE")
+  fi
+
+  local found
+  for found in "${detected[@]}"; do
+    [[ -n "$found" && -z "${seen[$found]:-}" ]] || continue
+    printf '%s\t%s\n' "$found" "$(default_name "$found")"
+  done
+}
+
+list_inputs() { merged_inputs; }
+
+# A config skeleton the user can save and then edit the names in.
+detect_config() {
+  local -a codes=()
+  mapfile -t codes < <(detect_codes)
+  (( ${#codes[@]} > 0 )) || die "monitor reported no inputs (check /dev/i2c-* access)"
+  {
+    printf '{\n  "inputs": [\n'
+    local i
+    for i in "${!codes[@]}"; do
+      printf '    { "code": "%s", "name": "%s" }' "${codes[$i]}" "$(default_name "${codes[$i]}")"
+      [[ $i -lt $(( ${#codes[@]} - 1 )) ]] && printf ','
+      printf '\n'
+    done
+    printf '  ]\n}\n'
+  }
 }
 
 current_input() {
   # ddcutil prints e.g. "VCP code 0x60 (Input Source): DisplayPort-1 (sl=0x0f)"
   # or "Invalid value (sl=0x13)" when ddcutil doesn't recognize the code.
   local raw_code
-  raw_code=$(ddcutil getvcp "$VCP_INPUT_SOURCE" 2>/dev/null \
+  raw_code=$(ddc getvcp "$VCP_INPUT_SOURCE" 2>/dev/null \
     | grep -oE 'sl=0x[0-9a-fA-F]+' \
     | head -1 \
     | cut -d= -f2) || true
   [[ -n "$raw_code" ]] || die "could not read current input from ddcutil"
-  local code; code=$(normalize_code "$raw_code")
-  local name
-  name=$(jq -r --arg c "$code" '
-    .inputs[]
-    | select((.code | ascii_downcase | sub("^0x"; "0x")) == $c)
-    | .name' "$CONFIG_FILE" | head -1)
+  local code; code=$(normalize_code "$raw_code") || die "unparseable input code from ddcutil"
+
+  # Resolve against the merged list, hidden entries included: an input you chose
+  # not to show in the picker is still an input you can be sitting on.
+  # Materialize the list before matching: piping into an awk that `exit`s early
+  # SIGPIPEs the producer, and pipefail turns that into a fatal error.
+  local all name
+  all=$(merged_inputs all)
+  name=$(awk -F'\t' -v c="$code" '$1 == c { print $2; exit }' <<< "$all")
   [[ -n "$name" ]] || name="(unmapped $code)"
   printf '%s\t%s\n' "$code" "$name"
 }
 
 pick_and_switch() {
   command -v walker >/dev/null || die "walker not found in PATH"
-  local choices selected code
-  choices=$(list_inputs | cut -f2)
-  [[ -n "$choices" ]] || die "no inputs configured"
+  local inputs selected code
+  inputs=$(list_inputs)
+  [[ -n "$inputs" ]] || die "no inputs found (monitor reported none and no config at $CONFIG_FILE)"
 
   set +e
-  selected=$(printf '%s\n' "$choices" | walker --dmenu -p "Monitor input")
+  selected=$(cut -f2 <<< "$inputs" | walker --dmenu -p "Monitor input")
   local rc=$?
   set -e
   # walker exits non-zero on cancel; treat as silent no-op.
@@ -80,14 +170,10 @@ pick_and_switch() {
     exit 0
   fi
 
-  code=$(jq -r --arg n "$selected" '
-    .inputs[] | select((.hidden // false) | not) | select(.name == $n) | .code' "$CONFIG_FILE" \
-    | head -1)
+  code=$(awk -F'\t' -v n="$selected" '$2 == n { print $1; exit }' <<< "$inputs")
   [[ -n "$code" ]] || die "no code mapped for selection: $selected"
 
-  # Strip 0x prefix because ddcutil setvcp accepts plain hex.
-  local hex="${code#0x}"; hex="${hex#0X}"
-  if err=$(ddcutil setvcp "$VCP_INPUT_SOURCE" "0x${hex}" 2>&1); then
+  if err=$(ddc setvcp "$VCP_INPUT_SOURCE" "$code" 2>&1); then
     notify_ok "Switched to $selected"
   else
     die "ddcutil failed: ${err}"
@@ -100,15 +186,15 @@ main() {
       awk 'NR==1 {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
       ;;
     --list)
-      ensure_config
       list_inputs
       ;;
     --current)
-      ensure_config
       current_input
       ;;
+    --detect)
+      detect_config
+      ;;
     "")
-      ensure_config
       pick_and_switch
       ;;
     *)

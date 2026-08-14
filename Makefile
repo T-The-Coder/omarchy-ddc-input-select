@@ -1,34 +1,37 @@
 PREFIX      ?= $(HOME)/.local
 BINDIR      ?= $(PREFIX)/bin
-SHAREDIR    ?= $(PREFIX)/share/ddc-input-select
 CONFIG_DIR  ?= $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/ddc-input-select
 
 SCRIPT      := bin/ddc-input-select
-EXAMPLE     := config/inputs.example.json
 
-.PHONY: install uninstall check help
+PLUGIN_ID   := io.github.mattflower.ddc-input-select
+PLUGIN_DIR  ?= $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/omarchy/plugins/$(PLUGIN_ID)
+PLUGIN_SRC  := manifest.json Panel.qml Model.js
+OMARCHY_SHELL ?= $(HOME)/.local/share/omarchy/shell
+
+.PHONY: install uninstall check test test-model help install-plugin uninstall-plugin check-plugin
 
 help:
 	@echo "Targets:"
-	@echo "  install    install $(SCRIPT) to $(BINDIR) and seed $(CONFIG_DIR)/inputs.json"
-	@echo "  uninstall  remove the binary (config is left untouched)"
-	@echo "  check      run shellcheck on $(SCRIPT) if available"
+	@echo "  install           install $(SCRIPT) to $(BINDIR)"
+	@echo "  uninstall         remove the binary (config is left untouched)"
+	@echo "  check             run shellcheck on $(SCRIPT) if available"
+	@echo "  test              run every test (currently test-model)"
+	@echo "  test-model        unit-test Model.js under node"
+	@echo "  install-plugin    copy the Omarchy Quattro bar plugin into $(PLUGIN_DIR)"
+	@echo "  uninstall-plugin  remove the plugin directory"
+	@echo "  check-plugin      validate the manifest and lint the QML"
 
+# No config is seeded: the monitor is asked what inputs it has, and the config
+# file exists only to rename them. `--detect` writes a starting point.
 install:
-	@install -d $(BINDIR) $(SHAREDIR) $(CONFIG_DIR)
+	@install -d $(BINDIR)
 	@install -m 0755 $(SCRIPT) $(BINDIR)/ddc-input-select
-	@install -m 0644 $(EXAMPLE) $(SHAREDIR)/inputs.example.json
-	@# Patch the script to point at the installed example so first-run seeding works.
-	@sed -i 's|^EXAMPLE_CONFIG=.*|EXAMPLE_CONFIG="$${DDC_INPUT_SELECT_EXAMPLE:-$(SHAREDIR)/inputs.example.json}"|' $(BINDIR)/ddc-input-select
-	@if [ ! -f $(CONFIG_DIR)/inputs.json ]; then \
-		install -m 0644 $(EXAMPLE) $(CONFIG_DIR)/inputs.json; \
-		echo "seeded $(CONFIG_DIR)/inputs.json"; \
-	else \
-		echo "$(CONFIG_DIR)/inputs.json already exists; left untouched"; \
-	fi
-	@echo
 	@echo "Installed: $(BINDIR)/ddc-input-select"
-	@echo "Config:    $(CONFIG_DIR)/inputs.json"
+	@echo
+	@echo "Inputs are detected from the monitor. To rename them, seed a config:"
+	@echo "  mkdir -p $(CONFIG_DIR)"
+	@echo "  ddc-input-select --detect > $(CONFIG_DIR)/inputs.json"
 	@echo
 	@echo "Waybar snippet (add to ~/.config/waybar/config.jsonc):"
 	@echo
@@ -55,13 +58,56 @@ install:
 
 uninstall:
 	@rm -f $(BINDIR)/ddc-input-select
-	@rm -f $(SHAREDIR)/inputs.example.json
-	@rmdir $(SHAREDIR) 2>/dev/null || true
 	@echo "removed $(BINDIR)/ddc-input-select (config at $(CONFIG_DIR) left in place)"
+
+test: test-model
+
+test-model:
+	@if command -v node >/dev/null; then \
+		node test/model_test.js; \
+	else \
+		echo "node not installed; skipping Model.js tests"; \
+	fi
 
 check:
 	@if command -v shellcheck >/dev/null; then \
 		shellcheck $(SCRIPT); \
 	else \
 		echo "shellcheck not installed; skipping"; \
+	fi
+
+# --- Omarchy Quattro bar plugin -------------------------------------------
+#
+# The plugin talks to ddcutil itself, so these targets are independent of
+# `make install` — it needs neither the script nor a config file. Saving a file
+# under ~/.config/omarchy/plugins/ makes the shell hot-reload it, so re-running
+# install-plugin is enough to pick up an edit — no restart.
+
+install-plugin: check-plugin
+	@install -d $(PLUGIN_DIR)
+	@install -m 0644 $(PLUGIN_SRC) $(PLUGIN_DIR)/
+	@omarchy-shell -q shell rescanPlugins
+	@echo "Installed plugin to $(PLUGIN_DIR)"
+	@echo
+	@echo "Enable it with:"
+	@echo "  omarchy plugin enable $(PLUGIN_ID) right"
+
+uninstall-plugin:
+	@omarchy plugin disable $(PLUGIN_ID) 2>/dev/null || true
+	@rm -rf $(PLUGIN_DIR)
+	@omarchy-shell -q shell rescanPlugins
+	@echo "removed $(PLUGIN_DIR)"
+
+check-plugin:
+	@if command -v omarchy >/dev/null; then \
+		omarchy plugin validate . || exit 1; \
+		echo "manifest ok"; \
+	else \
+		echo "omarchy not installed; skipping manifest validation"; \
+	fi
+	@if command -v qmllint >/dev/null && [ -d $(OMARCHY_SHELL) ]; then \
+		qmllint -I $(OMARCHY_SHELL) Panel.qml || exit 1; \
+		echo "qmllint ok"; \
+	else \
+		echo "qmllint or $(OMARCHY_SHELL) missing; skipping QML lint"; \
 	fi

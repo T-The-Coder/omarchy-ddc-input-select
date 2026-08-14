@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mattflower.ddc-input-select",
+  "name": "Monitor Input",
+  "version": "1.0.0",
+  "author": "Matthew Flower",
+  "license": "MIT",
+  "description": "Switch the active input on a DDC/CI monitor from the Omarchy bar, using friendly names instead of DP-1 / HDMI-2.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Monitor Input",
+    "description": "Icon plus a popup that lists your configured monitor inputs and switches to the one you pick.",
+    "category": "Hardware",
+    "allowMultiple": true,
+    "defaultSection": "right",
+    "defaults": {
+      "displayNumber": 0,
+      "showLabel": false,
+      "brightnessStep": 10,
+      "configPath": ""
+    },
+    "schema": [
+      {
+        "key": "displayNumber",
+        "type": "integer",
+        "label": "ddcutil display number",
+        "description": "Which display to drive, as numbered by `ddcutil detect`. 0 lets ddcutil pick.",
+        "min": 0,
+        "max": 16,
+        "step": 1,
+        "defaultValue": 0
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show input name in the bar",
+        "description": "Print the active input's friendly name next to the icon.",
+        "defaultValue": false
+      },
+      {
+        "key": "brightnessStep",
+        "type": "integer",
+        "label": "Scroll brightness step",
+        "description": "How far a scroll over the bar icon moves monitor brightness. 0 disables scroll control.",
+        "min": 0,
+        "max": 50,
+        "step": 5,
+        "defaultValue": 10
+      },
+      {
+        "key": "configPath",
+        "type": "string",
+        "label": "Config file",
+        "description": "Path to the inputs JSON. Empty means ~/.config/ddc-input-select/inputs.json.",
+        "defaultValue": ""
+      }
+    ]
+  }
+}
