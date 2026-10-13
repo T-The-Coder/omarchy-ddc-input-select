@@ -188,12 +188,13 @@ It prints `ok`, `busy` (another DDC call is still running) or `unknown input`.
 
 ### Per-input shortcuts
 
-Every input row in the popup has a shortcut chip next to its code: the shortcut
-itself, or a 󰌌 keyboard glyph if it has none yet. Click it (or press `b` on the
-row under the keyboard cursor) to open the shortcut editor below the list:
+The gear in the popup header (or `s`) opens the **Shortcuts** page in place of
+the input list. It lists every input, hidden ones included, with its shortcut.
+Pick one by click or arrow-and-Enter to edit it below the list. The arrow
+button or Escape goes back.
 
 - Toggle the modifiers `SUPER`, `CTRL`, `ALT` and `SHIFT`, then press the key
-  on its own. The editor starts out listening, so it's usually click the chip,
+  on its own. The editor starts out listening, so it's usually pick the input,
   press `2`, Save.
   - Modifiers are toggles, not recorded, because Hyprland consumes a
     combination that is already bound (such as the input's current shortcut)
@@ -230,7 +231,7 @@ The plugin turns these into `~/.config/hypr/ddc-input-select.lua`, one
 require("hypr.ddc-input-select")
 ```
 
-Until that line is there, the popup says so.
+Until that line is there, the Shortcuts page says so.
 
 - The plugin writes only that one file and never touches `bindings.lua` itself.
   Nothing is created until the first `bind` exists.

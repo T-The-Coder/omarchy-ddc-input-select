@@ -150,6 +150,9 @@ Panel {
   // recorded key (see Model.js for why modifiers aren't recorded), and saves
   // the result as that input's "bind" in inputs.json — which the FileView
   // above then turns into the Hyprland module.
+  // The settings page replaces the input list in the same popup. It lists
+  // every input, hidden ones included, with its shortcut.
+  property bool settingsOpen: false
   property string editCode: ""
   property string editName: ""
   property string editOriginal: ""
@@ -183,6 +186,13 @@ Panel {
     // Ask Hyprland once per edit what is already bound, for the clash warning.
     if (!bindsProc.running) bindsProc.running = true
     root.startRecording()
+  }
+
+  function openSettings(open) {
+    root.closeEditor()
+    root.settingsOpen = open
+    root.cursorActive = false
+    root.cursorIndex = 0
   }
 
   function closeEditor() {
@@ -283,10 +293,15 @@ Panel {
   readonly property bool hasConfig: configInputs.length > 0
 
   function moveCursor(delta) {
-    root.cursorIndex = Model.moveIndex(root.cursorIndex, delta, rows.length + 1)
+    var count = settingsOpen ? inputs.length : rows.length + 1
+    root.cursorIndex = Model.moveIndex(root.cursorIndex, delta, count)
   }
 
   function activateCursor() {
+    if (settingsOpen) {
+      if (cursorIndex >= 0 && cursorIndex < inputs.length) openEditor(inputs[cursorIndex])
+      return
+    }
     if (cursorIndex === editIndex) { editConfig(); return }
     if (cursorIndex < 0 || cursorIndex >= rows.length) return
     applyInput(rows[cursorIndex].code)
@@ -312,6 +327,7 @@ Panel {
     if (!opened) {
       root.recording = false
       root.editCode = ""
+      root.settingsOpen = false
       return
     }
     root.cursorActive = false
@@ -514,16 +530,17 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: root.recording
-      onTextKey: function(t) {
-        if (t !== "b" || !root.cursorActive || root.editing) return
-        if (root.cursorIndex >= 0 && root.cursorIndex < root.rows.length) root.openEditor(root.rows[root.cursorIndex])
-      }
+      onTextKey: function(t) { if (t === "s") root.openSettings(!root.settingsOpen) }
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy !== 0 ? dy : dx)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.editing ? root.closeEditor() : root.close()
+      onCloseRequested: {
+        if (root.editing) root.closeEditor()
+        else if (root.settingsOpen) root.openSettings(false)
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
@@ -534,8 +551,8 @@ Panel {
         spacing: Style.space(12)
 
         PanelHero {
-          title: "Monitor input"
-          meta: root.statusText
+          title: root.settingsOpen ? "Shortcuts" : "Monitor input"
+          meta: root.settingsOpen ? "ONE KEY COMBINATION PER INPUT" : root.statusText
           foreground: root.bar.foreground
           fontFamily: root.bar.fontFamily
 
@@ -552,6 +569,7 @@ Panel {
             spacing: Style.space(2)
 
             PanelActionButton {
+              visible: !root.settingsOpen
               iconText: "󰏫"
               tooltipText: root.hasConfig
                 ? "Edit names — " + root.configPath
@@ -568,11 +586,19 @@ Panel {
             }
 
             PanelActionButton {
+              visible: !root.settingsOpen
               iconText: "󰑐"
               tooltipText: "Re-detect inputs and re-read the current one"
               foreground: root.bar.foreground
               enabled: !root.busy
               onClicked: root.refresh()
+            }
+
+            PanelActionButton {
+              iconText: root.settingsOpen ? "󰁍" : "󰒓"
+              tooltipText: root.settingsOpen ? "Back to the inputs" : "Shortcuts (s)"
+              foreground: root.bar.foreground
+              onClicked: root.openSettings(!root.settingsOpen)
             }
           }
         }
@@ -582,12 +608,14 @@ Panel {
         }
 
         PanelSectionHeader {
+          visible: !root.settingsOpen
           text: "INPUTS"
           foreground: root.bar.foreground
           fontFamily: root.bar.fontFamily
         }
 
         Column {
+          visible: !root.settingsOpen
           width: parent.width
           spacing: Style.space(2)
 
@@ -605,7 +633,7 @@ Panel {
         }
 
         Text {
-          visible: root.emptyText !== ""
+          visible: !root.settingsOpen && root.emptyText !== ""
           width: parent.width
           text: root.emptyText
           color: Qt.darker(root.bar.foreground, 1.4)
@@ -614,8 +642,43 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
+        PanelSectionHeader {
+          visible: root.settingsOpen
+          text: "INPUTS"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+        }
+
         Column {
-          visible: root.editing
+          visible: root.settingsOpen
+          width: parent.width
+          spacing: Style.space(2)
+
+          Repeater {
+            model: root.inputs
+
+            ShortcutRow {
+              required property var modelData
+              required property int index
+              width: column.width
+              entry: modelData
+              rowIndex: index
+            }
+          }
+        }
+
+        Text {
+          visible: root.settingsOpen && !root.editing
+          width: parent.width
+          text: root.inputs.length === 0 ? root.emptyText : "Pick an input to give it a shortcut."
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
+
+        Column {
+          visible: root.settingsOpen && root.editing
           width: parent.width
           spacing: Style.space(8)
 
@@ -726,7 +789,7 @@ Panel {
         }
 
         Text {
-          visible: root.hasBindings && !root.bindingsRequired
+          visible: root.settingsOpen && root.hasBindings && !root.bindingsRequired
           width: parent.width
           text: "Shortcuts are written to ~/.config/hypr/ddc-input-select.lua. "
             + "Add require(\"hypr.ddc-input-select\") to ~/.config/hypr/bindings.lua "
@@ -806,19 +869,7 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: inputRow.isActive
         elide: Text.ElideRight
-        width: parent.width - Style.space(20) - bindChip.implicitWidth - codeLabel.implicitWidth - Style.space(24)
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      // Click target for the shortcut editor: the shortcut itself, or a
-      // keyboard glyph when there is none yet.
-      Text {
-        id: bindChip
-        text: inputRow.entry.bind ? inputRow.entry.bind : "󰌌"
-        color: root.editCode === inputRow.entry.code ? root.bar.foreground
-          : Qt.darker(root.bar.foreground, inputRow.entry.bind ? 1.15 : 1.6)
-        font.family: root.bar.fontFamily
-        font.pixelSize: inputRow.entry.bind ? Style.font.caption : Style.font.body
+        width: parent.width - Style.space(20) - codeLabel.implicitWidth - Style.space(16)
         anchors.verticalCenter: parent.verticalCenter
       }
 
@@ -840,14 +891,63 @@ Panel {
         root.cursorActive = true
         root.cursorIndex = inputRow.rowIndex
       }
-      onClicked: function(mouse) {
-        // The row's own MouseArea sits on top of everything in it, so the
-        // shortcut chip is hit-tested here rather than with its own area.
-        var p = mapToItem(bindChip, mouse.x, mouse.y)
-        var slop = Style.space(6)
-        if (p.x >= -slop && p.x <= bindChip.width + slop) root.openEditor(inputRow.entry)
-        else root.applyInput(inputRow.entry.code)
+      onClicked: root.applyInput(inputRow.entry.code)
+    }
+  }
+
+  // One input on the settings page: its name and its shortcut. Clicking opens
+  // the editor for it; the row being edited stays marked.
+  component ShortcutRow: CursorSurface {
+    id: shortcutRow
+    required property var entry
+    required property int rowIndex
+
+    hasCursor: root.cursorActive && root.cursorIndex === rowIndex
+    current: root.editCode === entry.code
+    foreground: root.bar.foreground
+    fill: root.hoverFill
+    currentFill: root.selectedFill
+    implicitHeight: shortcutInner.implicitHeight + Style.spacing.xl
+
+    Row {
+      id: shortcutInner
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(6)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(8)
+
+      Text {
+        text: shortcutRow.entry.name
+        color: root.bar.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: shortcutRow.current
+        elide: Text.ElideRight
+        width: parent.width - shortcutLabel.implicitWidth - Style.space(8)
+        anchors.verticalCenter: parent.verticalCenter
       }
+
+      Text {
+        id: shortcutLabel
+        text: shortcutRow.entry.bind ? shortcutRow.entry.bind : "none"
+        color: shortcutRow.entry.bind ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.6)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) {
+        root.cursorActive = true
+        root.cursorIndex = shortcutRow.rowIndex
+      }
+      onClicked: root.openEditor(shortcutRow.entry)
     }
   }
 }
