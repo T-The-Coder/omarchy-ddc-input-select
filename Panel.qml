@@ -144,17 +144,19 @@ Panel {
     if (!reloadProc.running) reloadProc.running = true
   }
 
-  // --- shortcut editor -------------------------------------------------------
+  // --- settings page -----------------------------------------------------------
   //
-  // Lives on the settings page, which replaces the input list in the same
-  // popup and lists every input, hidden ones included, with its shortcut.
-  // Recording a combination switches Hyprland into an empty submap so that
-  // no binding swallows it — the input's current shortcut included. The
-  // result is saved as that input's "bind" in inputs.json, which the
-  // FileView above then turns into the Hyprland module.
+  // Replaces the input list in the same popup and lists every input, hidden
+  // ones included. Picking one opens its editor: name, shortcut, and whether
+  // it shows in the list. Saving writes those into inputs.json, which the
+  // FileView above then turns into the popup's names and the Hyprland module.
+  // Recording a shortcut switches Hyprland into an empty submap so that no
+  // binding swallows the combination — the input's current shortcut included.
   property bool settingsOpen: false
   property string editCode: ""
   property string editName: ""
+  property string editDraftName: ""
+  property bool editHidden: false
   property string editOriginal: ""
   property bool editOriginalOverride: false
   property var editMods: []
@@ -169,11 +171,10 @@ Panel {
     : Model.hyprConflicts(hyprBindsText, editBind, Model.describeBind(editName))
   readonly property var editInputConflicts: Model.inputConflicts(inputs, editCode, editBind)
   readonly property string editProblem: {
-    if (editKey === "") return "Press a key combination."
-    if (editMods.length === 0) return "Add at least one modifier, so the key keeps working everywhere else."
+    if (editKey !== "" && editMods.length === 0) return "Add at least one modifier, so the key keeps working everywhere else."
     return ""
   }
-  readonly property bool editHasConflict: editProblem === ""
+  readonly property bool editHasConflict: editProblem === "" && editBind !== ""
     && (editHyprConflicts.length > 0 || editInputConflicts.length > 0)
   readonly property string editConflictText: {
     var parts = []
@@ -189,6 +190,8 @@ Panel {
   function openEditor(entry) {
     root.editCode = entry.code
     root.editName = entry.name
+    root.editDraftName = entry.name
+    root.editHidden = entry.hidden === true
     root.editOriginal = entry.bind || ""
     root.editOriginalOverride = entry.override === true
     var parsed = Model.parseBind(entry.bind)
@@ -198,7 +201,6 @@ Panel {
     root.errorText = ""
     // Ask Hyprland once per edit what is already bound, for the clash warning.
     if (!bindsProc.running) bindsProc.running = true
-    root.startRecording()
   }
 
   function openSettings(open) {
@@ -304,16 +306,23 @@ Panel {
     stopRecording()
   }
 
-  // `override` takes the combination from whatever else holds it: other
-  // inputs lose it, other Hyprland bindings are unbound by the module. A
-  // plain save of an unchanged shortcut keeps an override set earlier.
-  function saveBind(bind, override) {
+  // `override` takes the shortcut from whatever else holds it: other inputs
+  // lose it, other Hyprland bindings are unbound by the module. A plain save
+  // of an unchanged shortcut keeps an override set earlier. A name equal to
+  // the standard one is stored as no name, so the config stays an overlay.
+  function saveInput(override) {
+    var bind = root.editBind
     var keep = !override && root.editOriginalOverride
       && Model.canonicalBind(bind) === Model.canonicalBind(root.editOriginal)
     var takeFrom = override ? root.editInputConflicts.map(function(c) { return c.code }) : []
-    var text = Model.configWithBind(configFile.loaded ? configFile.text() : "",
-      root.editCode, root.editName, bind,
-      (override && root.editHyprConflicts.length > 0) || keep, takeFrom)
+    var name = root.editDraftName.trim()
+    if (name === Model.defaultNameFor(root.editCode)) name = ""
+    var text = Model.configWithInput(configFile.loaded ? configFile.text() : "", root.editCode, {
+      name: name,
+      bind: bind,
+      override: (override && root.editHyprConflicts.length > 0) || keep,
+      hidden: root.editHidden
+    }, takeFrom)
     if (text === "") {
       root.errorText = "Can't save while " + root.configPath + " isn't valid JSON."
       return
@@ -347,15 +356,8 @@ Panel {
     brightnessProc.running = true
   }
 
-  // The edit pencil lives in the hero, but it still occupies the last slot in
-  // the cursor space: stepping past the final input lands on it, so keyboard
-  // users reach it without a separate key. PanelActionButton.hasCursor makes it
-  // paint the same highlight a row would.
-  readonly property int editIndex: rows.length
-  readonly property bool hasConfig: configInputs.length > 0
-
   function moveCursor(delta) {
-    var count = settingsOpen ? inputs.length : rows.length + 1
+    var count = settingsOpen ? inputs.length : rows.length
     root.cursorIndex = Model.moveIndex(root.cursorIndex, delta, count)
   }
 
@@ -364,23 +366,8 @@ Panel {
       if (cursorIndex >= 0 && cursorIndex < inputs.length) openEditor(inputs[cursorIndex])
       return
     }
-    if (cursorIndex === editIndex) { editConfig(); return }
     if (cursorIndex < 0 || cursorIndex >= rows.length) return
     applyInput(rows[cursorIndex].code)
-  }
-
-  // Open the config in the user's chosen editor. With no config yet, one is
-  // written first from what the monitor reported — sending someone to an empty
-  // file when we already know every code they need would just be homework.
-  function editConfig() {
-    if (hasConfig || rows.length === 0) { launchEditor(); return }
-    mkdirProc.command = ["mkdir", "-p", Model.parentDir(root.configPath)]
-    mkdirProc.running = true
-  }
-
-  function launchEditor() {
-    Quickshell.execDetached(["omarchy-launch-config-editor", root.configPath])
-    root.close()
   }
 
   // Park the cursor on the active input each time the panel opens, so Enter
@@ -553,18 +540,6 @@ Panel {
     stderr: StdioCollector { waitForEnd: true }
   }
 
-  // The config directory is created before the seed write because FileView
-  // writes a file, not a path — a missing parent is a silent failure.
-  Process {
-    id: mkdirProc
-    stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) {
-      if (exitCode === 0) configFile.setText(Model.seedConfigJson(root.inputs))
-      else root.errorText = "could not create " + Model.parentDir(root.configPath)
-      root.launchEditor()
-    }
-  }
-
   BarIconButton {
     id: button
     anchors.fill: parent
@@ -592,7 +567,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.recording
+      blocked: root.recording || nameField.activeFocus
       onTextKey: function(t) { if (t === "s") root.openSettings(!root.settingsOpen) }
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
@@ -614,8 +589,8 @@ Panel {
         spacing: Style.space(12)
 
         PanelHero {
-          title: root.settingsOpen ? "Shortcuts" : "Monitor input"
-          meta: root.settingsOpen ? "ONE KEY COMBINATION PER INPUT" : root.statusText
+          title: root.settingsOpen ? "Settings" : "Monitor input"
+          meta: root.settingsOpen ? "NAMES AND SHORTCUTS" : root.statusText
           foreground: root.bar.foreground
           fontFamily: root.bar.fontFamily
 
@@ -626,27 +601,10 @@ Panel {
             font.pixelSize: Style.font.display
           }
 
-          // Both hero actions live in one Row so PanelHero's trailing Loader
-          // sizes and insets the pair exactly as it would a single control.
+          // The hero actions live in one Row so PanelHero's trailing Loader
+          // sizes and insets them exactly as it would a single control.
           trailingControl: Row {
             spacing: Style.space(2)
-
-            PanelActionButton {
-              visible: !root.settingsOpen
-              iconText: "󰏫"
-              tooltipText: root.hasConfig
-                ? "Edit names — " + root.configPath
-                : "Name these inputs — creates " + root.configPath
-              foreground: root.bar.foreground
-              hasCursor: root.cursorActive && root.cursorIndex === root.editIndex
-              onClicked: root.editConfig()
-              onHovered: function(isHovered) {
-                if (isHovered) {
-                  root.cursorActive = true
-                  root.cursorIndex = root.editIndex
-                }
-              }
-            }
 
             PanelActionButton {
               visible: !root.settingsOpen
@@ -659,7 +617,7 @@ Panel {
 
             PanelActionButton {
               iconText: root.settingsOpen ? "󰁍" : "󰒓"
-              tooltipText: root.settingsOpen ? "Back to the inputs" : "Shortcuts (s)"
+              tooltipText: root.settingsOpen ? "Back to the inputs" : "Names and shortcuts (s)"
               foreground: root.bar.foreground
               onClicked: root.openSettings(!root.settingsOpen)
             }
@@ -733,7 +691,7 @@ Panel {
         Text {
           visible: root.settingsOpen && !root.editing
           width: parent.width
-          text: root.inputs.length === 0 ? root.emptyText : "Pick an input to give it a shortcut."
+          text: root.inputs.length === 0 ? root.emptyText : "Pick an input to rename it, give it a shortcut or hide it."
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -750,10 +708,31 @@ Panel {
           }
 
           PanelSectionHeader {
-            text: "SHORTCUT · " + root.editName.toUpperCase()
+            text: "INPUT " + root.editCode
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
+
+          FieldLabel { text: "Name" }
+
+          TextField {
+            id: nameField
+            width: parent.width
+            text: root.editDraftName
+            placeholderText: Model.defaultNameFor(root.editCode)
+            foreground: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+            onTextEdited: root.editDraftName = text
+            onAccepted: keyCatcher.forceActiveFocus()
+            Keys.onEscapePressed: function(event) {
+              root.editDraftName = root.editName
+              keyCatcher.forceActiveFocus()
+              event.accepted = true
+            }
+          }
+
+          FieldLabel { text: "Shortcut" }
 
           // Catches the key press while recording. PanelKeyCatcher is blocked
           // meanwhile, so keys reach this item instead of moving the cursor.
@@ -790,7 +769,7 @@ Panel {
 
             Button {
               text: root.recording ? (root.editKey === "" ? "press keys…" : root.editKey + " · press keys…")
-                : (root.editKey === "" ? "key" : root.editKey)
+                : (root.editKey === "" ? "record" : root.editKey)
               tooltipText: "Click, then press the combination. Backspace clears it."
               bordered: true
               selected: root.recording
@@ -800,15 +779,26 @@ Panel {
               horizontalPadding: Style.space(6)
               onClicked: root.recording ? root.stopRecording() : root.startRecording()
             }
+
+            Button {
+              visible: root.editKey !== "" && !root.recording
+              text: "clear"
+              tooltipText: "No shortcut for this input"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(6)
+              onClicked: root.editKey = ""
+            }
           }
 
           Text {
             width: parent.width
             text: root.recordError !== "" ? root.recordError
-              : root.recording && root.editProblem !== ""
-                ? "Press the whole combination. Your other shortcuts are paused meanwhile."
+              : root.recording ? "Press the whole combination. Your other shortcuts are paused meanwhile."
               : root.editProblem !== "" ? root.editProblem
               : root.editHasConflict ? root.editBind + ": " + root.editConflictText
+              : root.editBind === "" ? "No shortcut."
               : root.editBind + " is free."
             color: root.recordError !== "" || (root.editProblem !== "" && !root.recording) || root.editHasConflict
               ? (root.bar ? root.bar.urgent : Color.foreground)
@@ -818,6 +808,16 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          Toggle {
+            width: parent.width
+            label: "Show in the input list"
+            checked: !root.editHidden
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            titleSize: Style.font.body
+            onClicked: root.editHidden = !root.editHidden
+          }
+
           Row {
             spacing: Style.space(4)
 
@@ -825,12 +825,12 @@ Panel {
               visible: !root.editHasConflict
               text: "Save"
               bordered: true
-              enabled: root.editProblem === ""
+              enabled: root.editProblem === "" && !root.recording
               opacity: enabled ? 1 : 0.45
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.saveBind(root.editBind, false)
+              onClicked: root.saveInput(false)
             }
 
             // A clash offers both ways out: record something else, or take
@@ -855,17 +855,7 @@ Panel {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.saveBind(root.editBind, true)
-            }
-
-            Button {
-              visible: root.editOriginal !== "" && !root.editHasConflict
-              text: "Remove"
-              bordered: true
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.saveBind("")
+              onClicked: root.saveInput(true)
             }
 
             Button {
@@ -985,8 +975,9 @@ Panel {
     }
   }
 
-  // One input on the settings page: its name and its shortcut. Clicking opens
-  // the editor for it; the row being edited stays marked.
+  // One input on the settings page: its name, whether it's hidden, and its
+  // shortcut. Clicking opens the editor for it; the row being edited stays
+  // marked.
   component ShortcutRow: CursorSurface {
     id: shortcutRow
     required property var entry
@@ -1009,8 +1000,8 @@ Panel {
       spacing: Style.space(8)
 
       Text {
-        text: shortcutRow.entry.name
-        color: root.bar.foreground
+        text: shortcutRow.entry.hidden ? shortcutRow.entry.name + "  (hidden)" : shortcutRow.entry.name
+        color: shortcutRow.entry.hidden ? Qt.darker(root.bar.foreground, 1.4) : root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.body
         font.bold: shortcutRow.current
@@ -1039,5 +1030,11 @@ Panel {
       }
       onClicked: root.openEditor(shortcutRow.entry)
     }
+  }
+
+  component FieldLabel: Text {
+    color: Qt.darker(root.bar.foreground, 1.4)
+    font.family: root.bar.fontFamily
+    font.pixelSize: Style.font.caption
   }
 }

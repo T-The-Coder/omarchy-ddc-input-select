@@ -441,47 +441,55 @@ function describeBind(name) {
   return "Monitor input: " + name
 }
 
-// Write one input's bind into the config text, keeping everything else the
-// user wrote: other entries, their order, unknown keys. An input that isn't
-// in the config yet is appended under the name the popup shows. An empty
-// bind removes the field. `override` marks the bind as taking the combination
-// from other Hyprland bindings; `takeFrom` lists inputs whose bind is dropped
-// because this one takes it over. Returns "" if the existing text isn't a
-// config this can safely rewrite — never guess over a file the user is
-// mid-way through.
-function configWithBind(text, code, name, bind, override, takeFrom) {
+// Write one input's settings into the config text, keeping everything else
+// the user wrote: other entries, their order, unknown keys. `changes` holds
+// the fields the settings page edits — name, bind, override, hidden — and
+// only those present are touched. An empty name or bind, or a false
+// override/hidden, removes the field, so the defaults apply again. An input
+// that isn't in the config yet is appended. `takeFrom` lists inputs whose
+// bind is dropped because this one takes it over. Returns "" if the existing
+// text isn't a config this can safely rewrite — never guess over a file the
+// user is mid-way through.
+function configWithInput(text, code, changes, takeFrom) {
   var parsed = { inputs: [] }
   if (text && String(text).trim() !== "") {
     try { parsed = JSON.parse(text) } catch (e) { return "" }
     if (!parsed || !Array.isArray(parsed.inputs)) return ""
   }
   var wanted = normalizeCode(code)
-  var found = false
+  var target = null
   for (var i = 0; i < parsed.inputs.length; i++) {
     var entry = parsed.inputs[i]
     if (!entry) continue
     var entryCode = normalizeCode(entry.code)
-    if ((takeFrom || []).indexOf(entryCode) !== -1 && entryCode !== wanted) {
+    if (entryCode === wanted) { if (!target) target = entry; continue }
+    if ((takeFrom || []).indexOf(entryCode) !== -1) {
       delete entry.bind
       delete entry.override
-      continue
     }
-    if (entryCode !== wanted) continue
-    found = true
-    if (bind) entry.bind = bind
-    else delete entry.bind
-    if (bind && override) entry.override = true
-    else delete entry.override
   }
-  if (!found && bind) {
-    var added = { code: wanted, name: name, bind: bind }
-    if (override) added.override = true
-    parsed.inputs.push(added)
+  var added = !target
+  if (added) {
+    target = { code: wanted }
+    parsed.inputs.push(target)
   }
+  if ("name" in changes) applyField(target, "name", changes.name ? String(changes.name).trim() : "")
+  if ("bind" in changes) applyField(target, "bind", changes.bind || "")
+  if ("override" in changes || "bind" in changes) {
+    applyField(target, "override", !!(target.bind && changes.override))
+  }
+  if ("hidden" in changes) applyField(target, "hidden", changes.hidden === true)
+  // An appended entry that ended up saying nothing would only be clutter.
+  if (added && Object.keys(target).length === 1) parsed.inputs.pop()
   return renderConfig(parsed)
 }
 
-// One input per line, like the seed, so a file the popup touched still reads
+function applyField(entry, key, value) {
+  if (value === "" || value === false) delete entry[key]
+  else entry[key] = value
+}
+
+// One input per line, so a file the settings page touched still reads
 // like one a person wrote.
 function renderConfig(parsed) {
   var entries = parsed.inputs.map(function(entry) {
@@ -504,17 +512,6 @@ function renderConfig(parsed) {
   }
   lines.push("}")
   return lines.join("\n") + "\n"
-}
-
-// Render a config file from a merged input list. Used to seed a first config
-// from whatever the monitor reported, so the user opens a filled-in file and
-// only has to replace names — never has to look up their monitor's codes.
-function seedConfigJson(inputs) {
-  var entries = (inputs || []).map(function(entry) {
-    return '    { "code": "' + entry.code + '", "name": "'
-      + String(entry.name).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '" }'
-  })
-  return '{\n  "inputs": [\n' + entries.join(",\n") + '\n  ]\n}\n'
 }
 
 // Everything up to the last separator. QML has no path helpers and the config

@@ -72,7 +72,9 @@ $ ddc-input-select --list
 
 `Input 0x19` and `Input 0x13` are unnamed because they're vendor extensions —
 Dell uses them for Thunderbolt and a second DisplayPort, and MCCS defines neither.
-That's what the config file is for. Seed one from the monitor and edit the names:
+That's what the config file is for. The plugin's Settings page writes it for you
+(see [Names, visibility and shortcuts](#names-visibility-and-shortcuts)); for the
+CLI, seed one from the monitor and edit the names:
 
 ```sh
 mkdir -p ~/.config/ddc-input-select
@@ -139,12 +141,9 @@ inputs with the active one checked; click or arrow-and-Enter to switch. Middle
 click re-detects. Scrolling the icon nudges monitor brightness (VCP `0x10`),
 carrying over the `on-scroll` bindings from the old waybar module.
 
-A pencil icon sits beside the refresh icon in the popup header and opens the
-config in your Omarchy editor. With no config yet it creates the directory and
-file first — seeded with everything the monitor reported — so you land in a
-filled-in file and only have to replace names. Its tooltip says which of the two
-it will do, and names the path. It's also the last stop in the keyboard cursor,
-one step past the final input.
+A gear beside the refresh icon in the popup header (or `s`) opens the
+**Settings** page, where inputs are renamed, hidden and given shortcuts — see
+[Names, visibility and shortcuts](#names-visibility-and-shortcuts).
 
 Discovery runs on the first open of each shell session and is cached from then
 on — the monitor's input list doesn't change between reboots. Later opens only
@@ -186,15 +185,19 @@ omarchy-shell ddc-input set "Work Laptop"
 
 It prints `ok`, `busy` (another DDC call is still running) or `unknown input`.
 
-### Per-input shortcuts
+### Names, visibility and shortcuts
 
-The gear in the popup header (or `s`) opens the **Shortcuts** page in place of
+The gear in the popup header (or `s`) opens the **Settings** page in place of
 the input list. It lists every input, hidden ones included, with its shortcut.
 Pick one by click or arrow-and-Enter to edit it below the list. The arrow
 button or Escape goes back.
 
-- Press the whole combination, e.g. `Ctrl+Shift+2`. The editor starts out
-  listening, so it's usually pick the input, press the keys, Save.
+The editor has three parts, saved together with **Save**:
+
+- **Name**: what the popup and the shortcut descriptions call the input.
+  Clearing it brings back the standard name.
+- **Shortcut**: click **record** and press the whole combination, e.g.
+  `Ctrl+Shift+2`. **clear** removes the shortcut.
   - While it listens, Hyprland is switched into an empty submap, so none of
     your shortcuts fire and the combination reaches the popup. That includes
     one that is bound right now, such as the input's current shortcut.
@@ -204,21 +207,24 @@ button or Escape goes back.
   - The `SUPER`/`CTRL`/`ALT`/`SHIFT` toggles adjust the modifiers afterwards.
     A key pressed without modifiers keeps the toggled ones.
   - Backspace clears the key, and Escape stops listening.
-- Save is disabled while the shortcut has no modifier.
-- If the combination is already in use, the editor says by what, and offers
-  two ways out:
-  - **Pick another** listens again.
-  - **Override** takes the combination over. Another input that had it loses
-    it. A Hyprland binding (from `hyprctl binds`) is switched off by an
-    `hl.unbind()` in the generated module, stored as `"override": true` on
-    the input.
-- Save writes the shortcut into `inputs.json`. An input that isn't listed
-  there yet is added under the name the popup shows. Remove deletes the
-  shortcut.
+  - A shortcut needs at least one modifier, or Save stays disabled.
+  - If the combination is already in use, the editor says by what, and
+    offers two ways out instead of Save:
+    - **Pick another** listens again.
+    - **Override** takes the combination over. Another input that had it
+      loses it. A Hyprland binding (from `hyprctl binds`) is switched off by
+      an `hl.unbind()` in the generated module, stored as `"override": true`
+      on the input.
+- **Show in the input list**: off hides the input from the popup's list
+  (`"hidden": true`). It keeps its shortcut.
+
+Saving writes into `inputs.json`, keeping everything else in the file. An
+input that isn't listed there yet is added. A name equal to the standard one
+isn't stored, so the file stays an overlay.
 
 Under the hood each shortcut is a `"bind"` on its input in `inputs.json`, in
-the same key syntax Omarchy's `bindings.lua` uses, so it can also be written
-by hand:
+the same key syntax Omarchy's `bindings.lua` uses, so the file can still be
+edited by hand:
 
 ```json
 {
@@ -240,7 +246,7 @@ above it:
 require("hypr.ddc-input-select")
 ```
 
-Until that line is there, the Shortcuts page says so.
+Until that line is there, the Settings page says so.
 
 - The plugin writes only that one file and never touches `bindings.lua` itself.
   Nothing is created until the first `bind` exists.
