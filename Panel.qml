@@ -146,16 +146,17 @@ Panel {
 
   // --- shortcut editor -------------------------------------------------------
   //
-  // Opened from an input row's shortcut chip. Edits modifier toggles plus one
-  // recorded key (see Model.js for why modifiers aren't recorded), and saves
-  // the result as that input's "bind" in inputs.json — which the FileView
-  // above then turns into the Hyprland module.
-  // The settings page replaces the input list in the same popup. It lists
-  // every input, hidden ones included, with its shortcut.
+  // Lives on the settings page, which replaces the input list in the same
+  // popup and lists every input, hidden ones included, with its shortcut.
+  // Recording a combination switches Hyprland into an empty submap so that
+  // no binding swallows it — the input's current shortcut included. The
+  // result is saved as that input's "bind" in inputs.json, which the
+  // FileView above then turns into the Hyprland module.
   property bool settingsOpen: false
   property string editCode: ""
   property string editName: ""
   property string editOriginal: ""
+  property bool editOriginalOverride: false
   property var editMods: []
   property string editKey: ""
   property bool recording: false
@@ -168,16 +169,28 @@ Panel {
     : Model.hyprConflicts(hyprBindsText, editBind, Model.describeBind(editName))
   readonly property var editInputConflicts: Model.inputConflicts(inputs, editCode, editBind)
   readonly property string editProblem: {
-    if (editKey === "") return "Pick a key."
+    if (editKey === "") return "Press a key combination."
     if (editMods.length === 0) return "Add at least one modifier, so the key keeps working everywhere else."
-    if (editInputConflicts.length > 0) return "Already the shortcut for " + editInputConflicts.join(", ") + "."
     return ""
+  }
+  readonly property bool editHasConflict: editProblem === ""
+    && (editHyprConflicts.length > 0 || editInputConflicts.length > 0)
+  readonly property string editConflictText: {
+    var parts = []
+    if (editInputConflicts.length > 0) {
+      parts.push("Already the shortcut for " + editInputConflicts.map(function(c) { return c.name }).join(", ") + ".")
+    }
+    if (editHyprConflicts.length > 0) {
+      parts.push("Hyprland uses it for: " + editHyprConflicts.join(", ") + ".")
+    }
+    return parts.join(" ")
   }
 
   function openEditor(entry) {
     root.editCode = entry.code
     root.editName = entry.name
     root.editOriginal = entry.bind || ""
+    root.editOriginalOverride = entry.override === true
     var parsed = Model.parseBind(entry.bind)
     root.editMods = parsed.mods
     root.editKey = parsed.key
@@ -197,6 +210,8 @@ Panel {
 
   function closeEditor() {
     root.recording = false
+    recordTimeout.stop()
+    root.releaseSubmap()
     root.editCode = ""
     keyCatcher.forceActiveFocus()
   }
@@ -213,12 +228,52 @@ Panel {
     root.recordError = ""
     root.recording = true
     recorder.forceActiveFocus()
+    recordTimeout.restart()
+    if (!root.submapHeld) {
+      root.submapHeld = true
+      submapLeaveQueued = false
+      if (!submapEnterProc.running) submapEnterProc.running = true
+    }
   }
 
   function stopRecording() {
     root.recording = false
+    recordTimeout.stop()
     keyCatcher.forceActiveFocus()
+    root.releaseSubmap()
   }
+
+  // Leave the record submap. If entering is still in flight, leave right
+  // after it lands rather than racing it.
+  property bool submapHeld: false
+  property bool submapLeaveQueued: false
+  function releaseSubmap() {
+    if (!root.submapHeld) return
+    root.submapHeld = false
+    if (submapEnterProc.running) { root.submapLeaveQueued = true; return }
+    Quickshell.execDetached(Model.leaveRecordSubmapArgs())
+  }
+
+  // Never leave the user without their shortcuts for long, whatever happened
+  // to the popup.
+  Timer {
+    id: recordTimeout
+    interval: 20000
+    onTriggered: if (root.recording) root.stopRecording()
+  }
+
+  Process {
+    id: submapEnterProc
+    command: ["sh", "-c", Model.enterRecordSubmapCommand()]
+    onExited: {
+      if (root.submapLeaveQueued || !root.submapHeld) {
+        root.submapLeaveQueued = false
+        Quickshell.execDetached(Model.leaveRecordSubmapArgs())
+      }
+    }
+  }
+
+  Component.onDestruction: if (submapHeld) Quickshell.execDetached(Model.leaveRecordSubmapArgs())
 
   // Bound to the recorder's Keys.onPressed while recording.
   function recordKey(event) {
@@ -237,21 +292,28 @@ Panel {
       root.recordError = "That key can't be used here. Try a letter, digit or F-key."
       return
     }
-    // Modifiers held while pressing are taken too, for combinations Hyprland
-    // doesn't already own; the toggles cover the ones it does.
-    var held = root.editMods.slice()
+    // The held modifiers are the combination. A bare key keeps the toggles,
+    // so a modifier set can also be clicked together first.
+    var held = []
     if (event.modifiers & Qt.ControlModifier) held.push("CTRL")
     if (event.modifiers & Qt.ShiftModifier) held.push("SHIFT")
     if (event.modifiers & Qt.AltModifier) held.push("ALT")
     if (event.modifiers & Qt.MetaModifier) held.push("SUPER")
-    root.editMods = Model.parseBind(Model.formatBind(held, "")).mods
+    if (held.length > 0) root.editMods = Model.parseBind(Model.formatBind(held, "")).mods
     root.editKey = name
     stopRecording()
   }
 
-  function saveBind(bind) {
+  // `override` takes the combination from whatever else holds it: other
+  // inputs lose it, other Hyprland bindings are unbound by the module. A
+  // plain save of an unchanged shortcut keeps an override set earlier.
+  function saveBind(bind, override) {
+    var keep = !override && root.editOriginalOverride
+      && Model.canonicalBind(bind) === Model.canonicalBind(root.editOriginal)
+    var takeFrom = override ? root.editInputConflicts.map(function(c) { return c.code }) : []
     var text = Model.configWithBind(configFile.loaded ? configFile.text() : "",
-      root.editCode, root.editName, bind)
+      root.editCode, root.editName, bind,
+      (override && root.editHyprConflicts.length > 0) || keep, takeFrom)
     if (text === "") {
       root.errorText = "Can't save while " + root.configPath + " isn't valid JSON."
       return
@@ -326,6 +388,7 @@ Panel {
   onOpenedChanged: {
     if (!opened) {
       root.recording = false
+      root.releaseSubmap()
       root.editCode = ""
       root.settingsOpen = false
       return
@@ -726,9 +789,9 @@ Panel {
             }
 
             Button {
-              text: root.recording ? (root.editKey === "" ? "press a key…" : root.editKey + " · press a key…")
+              text: root.recording ? (root.editKey === "" ? "press keys…" : root.editKey + " · press keys…")
                 : (root.editKey === "" ? "key" : root.editKey)
-              tooltipText: "Click, then press the key alone. Backspace clears it."
+              tooltipText: "Click, then press the combination. Backspace clears it."
               bordered: true
               selected: root.recording
               foreground: root.bar.foreground
@@ -742,11 +805,12 @@ Panel {
           Text {
             width: parent.width
             text: root.recordError !== "" ? root.recordError
+              : root.recording && root.editProblem !== ""
+                ? "Press the whole combination. Your other shortcuts are paused meanwhile."
               : root.editProblem !== "" ? root.editProblem
-              : root.editHyprConflicts.length > 0
-                ? "Hyprland already uses " + root.editBind + " for: " + root.editHyprConflicts.join(", ") + "."
-              : root.editBind
-            color: root.recordError !== "" || root.editProblem !== "" || root.editHyprConflicts.length > 0
+              : root.editHasConflict ? root.editBind + ": " + root.editConflictText
+              : root.editBind + " is free."
+            color: root.recordError !== "" || (root.editProblem !== "" && !root.recording) || root.editHasConflict
               ? (root.bar ? root.bar.urgent : Color.foreground)
               : Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
@@ -758,6 +822,7 @@ Panel {
             spacing: Style.space(4)
 
             Button {
+              visible: !root.editHasConflict
               text: "Save"
               bordered: true
               enabled: root.editProblem === ""
@@ -765,11 +830,36 @@ Panel {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.saveBind(root.editBind)
+              onClicked: root.saveBind(root.editBind, false)
+            }
+
+            // A clash offers both ways out: record something else, or take
+            // the combination over.
+            Button {
+              visible: root.editHasConflict
+              text: "Pick another"
+              bordered: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.startRecording()
             }
 
             Button {
-              visible: root.editOriginal !== ""
+              visible: root.editHasConflict
+              text: "Override"
+              tooltipText: root.editInputConflicts.length > 0 && root.editHyprConflicts.length === 0
+                ? "Move the shortcut here; the other input loses it"
+                : "Use it here anyway; the other binding is switched off"
+              bordered: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.saveBind(root.editBind, true)
+            }
+
+            Button {
+              visible: root.editOriginal !== "" && !root.editHasConflict
               text: "Remove"
               bordered: true
               foreground: root.bar.foreground
@@ -792,7 +882,7 @@ Panel {
           visible: root.settingsOpen && root.hasBindings && !root.bindingsRequired
           width: parent.width
           text: "Shortcuts are written to ~/.config/hypr/ddc-input-select.lua. "
-            + "Add require(\"hypr.ddc-input-select\") to ~/.config/hypr/bindings.lua "
+            + "Add require(\"hypr.ddc-input-select\") at the end of ~/.config/hypr/bindings.lua "
             + "to turn them on."
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily

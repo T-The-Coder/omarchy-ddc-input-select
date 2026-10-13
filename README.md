@@ -193,17 +193,25 @@ the input list. It lists every input, hidden ones included, with its shortcut.
 Pick one by click or arrow-and-Enter to edit it below the list. The arrow
 button or Escape goes back.
 
-- Toggle the modifiers `SUPER`, `CTRL`, `ALT` and `SHIFT`, then press the key
-  on its own. The editor starts out listening, so it's usually pick the input,
-  press `2`, Save.
-  - Modifiers are toggles, not recorded, because Hyprland consumes a
-    combination that is already bound (such as the input's current shortcut)
-    before the popup sees it. Modifiers you do hold while pressing are picked up.
+- Press the whole combination, e.g. `Ctrl+Shift+2`. The editor starts out
+  listening, so it's usually pick the input, press the keys, Save.
+  - While it listens, Hyprland is switched into an empty submap, so none of
+    your shortcuts fire and the combination reaches the popup. That includes
+    one that is bound right now, such as the input's current shortcut.
+  - The submap is left as soon as a key is recorded, when the editor or
+    popup closes, and after 20 seconds at the latest. `Ctrl+Alt+Shift+F12`
+    leaves it by hand, should the shell ever go away mid-recording.
+  - The `SUPER`/`CTRL`/`ALT`/`SHIFT` toggles adjust the modifiers afterwards.
+    A key pressed without modifiers keeps the toggled ones.
   - Backspace clears the key, and Escape stops listening.
-- Save is disabled while the shortcut has no modifier, or another input
-  already uses it.
-- If Hyprland already binds the combination to something else (from
-  `hyprctl binds`), the editor names it. Saving is still allowed.
+- Save is disabled while the shortcut has no modifier.
+- If the combination is already in use, the editor says by what, and offers
+  two ways out:
+  - **Pick another** listens again.
+  - **Override** takes the combination over. Another input that had it loses
+    it. A Hyprland binding (from `hyprctl binds`) is switched off by an
+    `hl.unbind()` in the generated module, stored as `"override": true` on
+    the input.
 - Save writes the shortcut into `inputs.json`. An input that isn't listed
   there yet is added under the name the popup shows. Remove deletes the
   shortcut.
@@ -224,8 +232,9 @@ by hand:
 
 The plugin turns these into `~/.config/hypr/ddc-input-select.lua`, one
 `o.bind()` per input calling `omarchy-shell ddc-input set <code>`, and runs
-`hyprctl reload` whenever that file changes. Load it once from
-`~/.config/hypr/bindings.lua`:
+`hyprctl reload` whenever that file changes. Load it once, at the **end** of
+`~/.config/hypr/bindings.lua` so that an override can switch off bindings made
+above it:
 
 ```lua
 require("hypr.ddc-input-select")

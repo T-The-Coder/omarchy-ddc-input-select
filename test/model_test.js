@@ -13,7 +13,8 @@ const EXPORTS = [
   "defaultNameFor", "ddcutilArgs", "moveIndex", "seedConfigJson", "parentDir",
   "resolveInput", "normalizeBind", "bindingsLua", "hasBindings",
   "parseBind", "formatBind", "canonicalBind", "keyNameFor", "modsFromMask",
-  "hyprConflicts", "inputConflicts", "configWithBind"
+  "hyprConflicts", "inputConflicts", "configWithBind", "enterRecordSubmapCommand",
+  "leaveRecordSubmapArgs", "shellQuote"
 ]
 
 const M = {}
@@ -180,6 +181,24 @@ eq(lua.endsWith("\n"), true, "lua: ends with a newline")
 eq(M.bindingsLua([], "ddc-input").includes("-- No shortcuts configured."), true,
    "lua: empty list still renders a valid module")
 eq(M.bindingsLua([], "ddc-input").includes("o.bind("), false, "lua: empty list binds nothing")
+eq(M.bindingsLua([], "ddc-input").includes('hl.define_submap("ddc-input-select-record"'), true,
+   "lua: defines the record submap")
+const overriding = M.parseConfig('{"inputs":[{"code":"0x11","name":"HDMI","bind":"SUPER + W","override":true}]}')
+eq(overriding[0].override, true, "override: parsed")
+eq(M.mergeInputs(["0x11"], overriding)[0].override, true, "override: survives the merge")
+eq(M.bindingsLua(overriding, "ddc-input").split("\n").filter(l => /^(hl\.unbind|o\.bind)/.test(l)), [
+  'hl.unbind("SUPER + W")',
+  'o.bind("SUPER + W", "Monitor input: HDMI", "omarchy-shell -q ddc-input set 0x11")'
+], "override: unbinds the combination before binding it")
+
+eq(M.shellQuote("it's"), "'it'\\''s'", "shellQuote: single quote")
+eq(M.enterRecordSubmapCommand(),
+   "hyprctl dispatch 'hl.dsp.submap(\"ddc-input-select-record\")' >/dev/null || "
+   + "{ hyprctl eval 'hl.define_submap(\"ddc-input-select-record\", function() "
+   + "hl.bind(\"CTRL + ALT + SHIFT + F12\", hl.dsp.submap(\"reset\")) end)' >/dev/null && "
+   + "hyprctl dispatch 'hl.dsp.submap(\"ddc-input-select-record\")' >/dev/null; }",
+   "submap: enter, defining it only when missing")
+eq(M.leaveRecordSubmapArgs(), ["hyprctl", "dispatch", 'hl.dsp.submap("reset")'], "submap: leave")
 
 eq(M.resolveInput(bound, "0x0F"), "0x0f", "resolve: by code, any case")
 eq(M.resolveInput(bound, "11"), "0x11", "resolve: bare hex code")
@@ -225,13 +244,14 @@ eq(M.hyprConflicts(HYPR_BINDS, "SUPER + RETURN", "Monitor input: HDMI"), ["Termi
    "conflict: taken by another binding")
 eq(M.hyprConflicts(HYPR_BINDS, "CTRL + SHIFT + 1", "Monitor input: VGA"), [],
    "conflict: the input's own shortcut is not a clash")
-eq(M.hyprConflicts(HYPR_BINDS, "SHIFT + CTRL + 1", "Monitor input: HDMI"), ["Monitor input: VGA"],
-   "conflict: another input's shortcut is")
+eq(M.hyprConflicts(HYPR_BINDS, "SHIFT + CTRL + 1", "Monitor input: HDMI"), [],
+   "conflict: other inputs' shortcuts are left to inputConflicts")
 eq(M.hyprConflicts(HYPR_BINDS, "SUPER + J", "x"), ["togglesplit"],
    "conflict: undescribed binding falls back to its dispatcher")
 eq(M.hyprConflicts(HYPR_BINDS, "ESCAPE", "x"), [], "conflict: submap bindings ignored")
 eq(M.hyprConflicts("not json", "SUPER + J", "x"), [], "conflict: bad JSON is no conflict")
-eq(M.inputConflicts(bound, "0x0f", "CTRL + SHIFT + 1"), ["VGA"], "conflict: between inputs")
+eq(M.inputConflicts(bound, "0x0f", "CTRL + SHIFT + 1"), [{ code: "0x01", name: "VGA" }],
+   "conflict: between inputs")
 eq(M.inputConflicts(bound, "0x01", "SHIFT + CTRL + 1"), [], "conflict: not with itself")
 
 const userConfig = '{\n  "inputs": [\n    { "code": "0x0F", "name": "Dock", "hidden": false, "note": "mine" },\n    { "code": "0x11", "name": "HDMI", "bind": "SUPER + H" }\n  ],\n  "extra": 1\n}\n'
@@ -252,6 +272,15 @@ eq(M.parseConfig(M.configWithBind("", "0x01", 'A "q"', "CTRL + 1"))[0].name, 'A 
    "write: round-trips through parseConfig")
 eq(JSON.parse(M.configWithBind('{"inputs":[]}', "0x01", "x", "")), { inputs: [] },
    "write: removing a bind that was never there changes nothing")
+eq(JSON.parse(M.configWithBind(userConfig, "0x0f", "Dock", "SUPER + W", true)).inputs[0].override, true,
+   "write: override is stored")
+eq("override" in JSON.parse(M.configWithBind(
+     M.configWithBind(userConfig, "0x0f", "Dock", "SUPER + W", true), "0x0f", "Dock", "SUPER + Q", false)).inputs[0],
+   false, "write: a later save without override drops it")
+eq(JSON.parse(M.configWithBind(userConfig, "0x0f", "Dock", "SUPER + H", false, ["0x11"])).inputs.map(e => e.bind),
+   ["SUPER + H", undefined], "write: takeFrom drops the other input's bind")
+eq(JSON.parse(M.configWithBind(userConfig, "0x01", "VGA", "CTRL + 1", true)).inputs[2],
+   { code: "0x01", name: "VGA", bind: "CTRL + 1", override: true }, "write: appended input keeps override")
 
 // --- misc -----------------------------------------------------------------
 eq(M.labelFor(M.mergeInputs(discovered, configured), "0x13"), "Twilight", "labelFor")
