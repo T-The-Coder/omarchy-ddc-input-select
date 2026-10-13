@@ -10,7 +10,8 @@ const SRC = path.join(__dirname, "..", "Model.js")
 const EXPORTS = [
   "normalizeCode", "parseConfig", "configIsMalformed", "visibleInputs",
   "parseCurrentCode", "parseCapabilities", "mergeInputs", "labelFor",
-  "defaultNameFor", "ddcutilArgs", "moveIndex", "seedConfigJson", "parentDir"
+  "defaultNameFor", "ddcutilArgs", "moveIndex", "seedConfigJson", "parentDir",
+  "resolveInput", "normalizeBind", "bindingsLua", "hasBindings"
 ]
 
 const M = {}
@@ -148,6 +149,46 @@ eq(M.parentDir("inputs.json"), "/", "parentDir: bare filename")
 eq(M.moveIndex(4, 1, 6), 5, "cursor: steps onto the edit control")
 eq(M.moveIndex(5, 1, 6), 0, "cursor: wraps from the edit control to the first row")
 
+// --- per-input shortcuts ---------------------------------------------------
+const bound = M.parseConfig(JSON.stringify({
+  inputs: [
+    { code: "0x01", name: "VGA", bind: "SHIFT + CTRL + 1" },
+    { code: "0x0f", name: "DisplayPort", bind: "  SHIFT +  CTRL\n+ 2 " },
+    { code: "0x11", name: 'Work "Laptop"', bind: "SHIFT + CTRL + 3", hidden: true },
+    { code: "0x12", name: "HDMI 2" }
+  ]
+}))
+eq(bound.map(e => e.bind), ["SHIFT + CTRL + 1", "SHIFT + CTRL + 2", "SHIFT + CTRL + 3", ""],
+   "bind: parsed, whitespace tidied, absent is empty")
+eq(M.mergeInputs(["0x01", "0x0f"], bound)[0].bind, "SHIFT + CTRL + 1",
+   "bind: survives the merge")
+eq(M.mergeInputs(["0x13"], [])[0].bind, "", "bind: discovered-only input has none")
+eq(M.hasBindings(bound), true, "bind: hasBindings with binds")
+eq(M.hasBindings(M.parseConfig('{"inputs":[{"code":"0x11"}]}')), false,
+   "bind: hasBindings without binds")
+eq(M.normalizeBind(null), "", "bind: null is empty")
+
+const lua = M.bindingsLua(bound, "ddc-input")
+eq(lua.split("\n").filter(l => l.startsWith("o.bind(")), [
+  'o.bind("SHIFT + CTRL + 1", "Monitor input: VGA", "omarchy-shell -q ddc-input set 0x01")',
+  'o.bind("SHIFT + CTRL + 2", "Monitor input: DisplayPort", "omarchy-shell -q ddc-input set 0x0f")',
+  'o.bind("SHIFT + CTRL + 3", "Monitor input: Work \\"Laptop\\"", "omarchy-shell -q ddc-input set 0x11")'
+], "lua: one bind per bound input, hidden included, quotes escaped")
+eq(lua.endsWith("\n"), true, "lua: ends with a newline")
+eq(M.bindingsLua([], "ddc-input").includes("-- No shortcuts configured."), true,
+   "lua: empty list still renders a valid module")
+eq(M.bindingsLua([], "ddc-input").includes("o.bind("), false, "lua: empty list binds nothing")
+
+eq(M.resolveInput(bound, "0x0F"), "0x0f", "resolve: by code, any case")
+eq(M.resolveInput(bound, "11"), "0x11", "resolve: bare hex code")
+eq(M.resolveInput(bound, "displayport"), "0x0f", "resolve: by name, case-insensitive")
+eq(M.resolveInput(bound, "Nope"), "", "resolve: unknown name")
+eq(M.resolveInput([], "hdmi-1"), "0x11", "resolve: MCCS name works before discovery")
+eq(M.resolveInput([], "0x11"), "", "resolve: unknown code is left to the caller")
+eq(M.resolveInput(bound, ""), "", "resolve: empty")
+eq(M.resolveInput([{ code: "0x0a", name: "12" }, { code: "0x12", name: "x" }], "12"), "0x12",
+   "resolve: a code wins over a name that looks like one")
+
 // --- misc -----------------------------------------------------------------
 eq(M.labelFor(M.mergeInputs(discovered, configured), "0x13"), "Twilight", "labelFor")
 eq(M.labelFor([], "0x99"), "Unmapped 0x99", "labelFor unmapped")
@@ -155,6 +196,10 @@ eq(M.ddcutilArgs(0, ["getvcp", "60"]), ["ddcutil", "getvcp", "60"],
    "args: no display flag when 0")
 eq(M.ddcutilArgs(2, ["setvcp", "10", "+", "10"]),
    ["ddcutil", "--display", "2", "setvcp", "10", "+", "10"], "args: display flag")
+eq(M.ddcutilArgs(2, ["getvcp", "60"], 3), ["ddcutil", "--bus", "3", "getvcp", "60"],
+   "args: bus wins over display")
+eq(M.ddcutilArgs(0, ["getvcp", "60"], 0), ["ddcutil", "getvcp", "60"],
+   "args: bus 0 is off")
 eq(M.moveIndex(0, -1, 5), 4, "cursor wraps up")
 eq(M.moveIndex(4, 1, 5), 0, "cursor wraps down")
 eq(M.moveIndex(0, 1, 0), 0, "cursor handles empty list")

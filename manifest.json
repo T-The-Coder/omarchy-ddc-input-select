@@ -20,6 +20,7 @@
     "defaultSection": "right",
     "defaults": {
       "displayNumber": 0,
+      "busNumber": 0,
       "showLabel": false,
       "brightnessStep": 10,
       "configPath": ""
@@ -32,6 +33,16 @@
         "description": "Which display to drive, as numbered by `ddcutil detect`. 0 lets ddcutil pick.",
         "min": 0,
         "max": 16,
+        "step": 1,
+        "defaultValue": 0
+      },
+      {
+        "key": "busNumber",
+        "type": "integer",
+        "label": "I2C bus number",
+        "description": "Drive the monitor on this /dev/i2c-N bus instead (`ddcutil --bus N`). Wins over the display number; useful behind docks that don't pass DDC/CI through. 0 turns it off.",
+        "min": 0,
+        "max": 32,
         "step": 1,
         "defaultValue": 0
       },

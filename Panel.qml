@@ -20,8 +20,12 @@ Panel {
 
   moduleName: "io.github.mattflower.ddc-input-select"
   ipcTarget: "ddc-input"
+  // manageIpc: false so this panel can own the single IpcHandler the target
+  // permits — needed for the set method that per-input shortcuts call.
+  manageIpc: false
 
   readonly property int displayNumber: setting("displayNumber", 0)
+  readonly property int busNumber: setting("busNumber", 0)
   readonly property bool showLabel: setting("showLabel", false) === true
   readonly property string configPath: {
     var custom = String(setting("configPath", ""))
@@ -82,24 +86,73 @@ Panel {
   // (~0.5s), then getvcp (~3s) from its onExited.
   function refresh() {
     if (busy) return
-    capsProc.command = Model.ddcutilArgs(root.displayNumber, ["capabilities", "--terse"])
+    capsProc.command = Model.ddcutilArgs(root.displayNumber, ["capabilities", "--terse"], root.busNumber)
     capsProc.running = true
   }
 
   function readCurrent() {
     if (getProc.running || setProc.running) return
-    getProc.command = Model.ddcutilArgs(root.displayNumber, ["getvcp", "60", "--terse"])
+    getProc.command = Model.ddcutilArgs(root.displayNumber, ["getvcp", "60", "--terse"], root.busNumber)
     getProc.running = true
   }
 
+  // Returns a short status for IPC callers; the popup ignores it.
   function applyInput(code) {
-    if (busy) return
+    if (busy) return "busy"
     var normalized = Model.normalizeCode(code)
-    if (normalized === "") return
+    if (normalized === "") return "unknown input"
     root.errorText = ""
     setProc.pendingCode = normalized
-    setProc.command = Model.ddcutilArgs(root.displayNumber, ["setvcp", "60", normalized])
+    setProc.command = Model.ddcutilArgs(root.displayNumber, ["setvcp", "60", normalized], root.busNumber)
     setProc.running = true
+    return "ok"
+  }
+
+  // IPC entry point for per-input shortcuts: `omarchy-shell ddc-input set 0x11`
+  // or `… set "Work Laptop"`. Codes the monitor never reported are still
+  // accepted, matching what clicking a dimmed row does.
+  function setIpc(wanted) {
+    var code = Model.resolveInput(root.inputs, wanted)
+    if (code === "") code = Model.normalizeCode(wanted)
+    return root.applyInput(code)
+  }
+
+  // --- per-input shortcuts ---------------------------------------------------
+  //
+  // Each input's optional "bind" in inputs.json becomes one o.bind() line in a
+  // file this plugin owns. The user's own bindings.lua is never written; it
+  // only needs a one-time require. Nothing is created until a bind exists, so
+  // installs that don't use shortcuts leave ~/.config/hypr untouched.
+  readonly property string hyprDir: Quickshell.env("HOME") + "/.config/hypr"
+  readonly property string bindingsPath: hyprDir + "/ddc-input-select.lua"
+  readonly property bool hasBindings: Model.hasBindings(configInputs)
+  property bool configSettled: false
+  property bool bindingsSettled: false
+  property bool bindingsExist: false
+  property string bindingsText: ""
+  property string hyprUserText: ""
+  readonly property bool bindingsRequired: hyprUserText.indexOf("hypr.ddc-input-select") !== -1
+
+  function syncBindings() {
+    if (!configSettled || !bindingsSettled) return
+    var wanted = Model.bindingsLua(configInputs, root.ipcTarget)
+    if (!hasBindings && !bindingsExist) return
+    if (bindingsExist && wanted === bindingsText) return
+    bindingsFile.setText(wanted)
+    root.bindingsText = wanted
+    root.bindingsExist = true
+    if (!reloadProc.running) reloadProc.running = true
+  }
+
+  IpcHandler {
+    target: root.ipcTarget
+
+    function set(input: string): string { return root.setIpc(input) }
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
   }
 
   // Carried over from the waybar module this plugin replaces: scrolling the bar
@@ -110,7 +163,7 @@ Panel {
   function adjustBrightness(delta) {
     if (brightnessStep <= 0 || busy) return
     brightnessProc.command = Model.ddcutilArgs(root.displayNumber,
-      ["setvcp", "10", delta > 0 ? "+" : "-", String(root.brightnessStep)])
+      ["setvcp", "10", delta > 0 ? "+" : "-", String(root.brightnessStep)], root.busNumber)
     brightnessProc.running = true
   }
 
@@ -173,12 +226,56 @@ Panel {
     onLoaded: {
       root.configInputs = Model.parseConfig(text())
       root.configBroken = Model.configIsMalformed(text())
+      // A config that fails to parse must not wipe shortcuts the user had
+      // working a typo ago; keep the old file until the JSON is valid again.
+      if (root.configBroken) return
+      root.configSettled = true
+      root.syncBindings()
     }
     onLoadFailed: {
       root.configInputs = []
       root.configBroken = false
+      root.configSettled = true
+      root.syncBindings()
     }
     onFileChanged: reload()
+  }
+
+  FileView {
+    id: bindingsFile
+    path: root.bindingsPath
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      root.bindingsText = text()
+      root.bindingsExist = true
+      root.bindingsSettled = true
+      root.syncBindings()
+    }
+    onLoadFailed: {
+      root.bindingsExist = false
+      root.bindingsSettled = true
+      root.syncBindings()
+    }
+  }
+
+  // Read only to tell whether the generated file is actually loaded, so the
+  // popup can say so instead of shortcuts silently doing nothing.
+  FileView {
+    id: hyprUserBindings
+    path: root.hyprDir + "/bindings.lua"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.hyprUserText = text()
+    onLoadFailed: root.hyprUserText = ""
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: reloadProc
+    command: ["hyprctl", "reload"]
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
   }
 
   Process {
@@ -371,6 +468,18 @@ Panel {
         }
 
         Text {
+          visible: root.hasBindings && !root.bindingsRequired
+          width: parent.width
+          text: "Shortcuts are written to ~/.config/hypr/ddc-input-select.lua. "
+            + "Add require(\"hypr.ddc-input-select\") to ~/.config/hypr/bindings.lua "
+            + "to turn them on."
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
+
+        Text {
           visible: root.configBroken
           width: parent.width
           text: "Ignoring " + root.configPath + " — it isn't valid JSON, so these are the monitor's own names."
@@ -445,7 +554,8 @@ Panel {
 
       Text {
         id: codeLabel
-        text: inputRow.entry.unsupported ? inputRow.entry.code + " ?" : inputRow.entry.code
+        text: (inputRow.entry.bind ? inputRow.entry.bind + "  " : "")
+          + (inputRow.entry.unsupported ? inputRow.entry.code + " ?" : inputRow.entry.code)
         color: Qt.darker(root.bar.foreground, 1.4)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption

@@ -100,6 +100,8 @@ The config is an **overlay**, not the source of truth:
   `--current` — an input you chose not to list is still one you can be sitting on.
 - An entry the monitor never reported is kept, not dropped (capability strings do
   under-report), but the plugin dims it and marks the code with `?`.
+- `"bind"` gives an input its own keyboard shortcut. Only the Quattro plugin
+  reads it — see [Per-input shortcuts](#per-input-shortcuts).
 
 For reference, the codes a Dell U5226KW reports — note that `0x13` and `0x19`
 are outside the MCCS standard, which is exactly why detection beats a hardcoded
@@ -159,6 +161,7 @@ Settings live under Setup > Plugins (or inline on the widget's entry in
 | Setting          | Default | Meaning                                                     |
 | ---------------- | ------- | ----------------------------------------------------------- |
 | `displayNumber`  | `0`     | `ddcutil --display N`; `0` lets ddcutil pick. Set this if you have more than one DDC monitor. |
+| `busNumber`      | `0`     | `ddcutil --bus N` (the `/dev/i2c-N` from `ddcutil detect`). Wins over `displayNumber`. For setups where the display number shifts, e.g. behind a dock that doesn't pass DDC/CI through. `0` turns it off. |
 | `showLabel`      | `false` | Print the active input's name next to the icon.             |
 | `brightnessStep` | `10`    | Scroll step for brightness; `0` disables scroll control.    |
 | `configPath`     | `""`    | Override the inputs JSON path.                              |
@@ -172,6 +175,53 @@ The popup is also reachable over IPC, which makes it bindable in
 ```sh
 omarchy-shell ddc-input toggle
 ```
+
+Switching straight to an input works the same way, by code or by name (the
+names from your config, or the standard ones such as `HDMI-1`):
+
+```sh
+omarchy-shell ddc-input set 0x11
+omarchy-shell ddc-input set "Work Laptop"
+```
+
+It prints `ok`, `busy` (another DDC call is still running) or `unknown input`.
+
+### Per-input shortcuts
+
+Add a `"bind"` to any input in `inputs.json`, in the same key syntax Omarchy's
+`bindings.lua` uses:
+
+```json
+{
+  "inputs": [
+    { "code": "0x0F", "name": "DisplayPort", "bind": "SHIFT + CTRL + 1" },
+    { "code": "0x11", "name": "Work Laptop", "bind": "SHIFT + CTRL + 2" },
+    { "code": "0x12", "name": "HDMI 2", "hidden": true, "bind": "SHIFT + CTRL + 3" }
+  ]
+}
+```
+
+The plugin turns these into `~/.config/hypr/ddc-input-select.lua`, one
+`o.bind()` per input calling `omarchy-shell ddc-input set <code>`, and runs
+`hyprctl reload` whenever that file changes. Load it once from
+`~/.config/hypr/bindings.lua`:
+
+```lua
+require("hypr.ddc-input-select")
+```
+
+Until that line is there, the popup says so. The popup also shows each
+input's shortcut next to its code.
+
+- The plugin writes only that one file and never touches `bindings.lua` itself.
+  Nothing is created until the first `bind` exists.
+- Removing every `bind` leaves an empty module behind, so the `require` keeps
+  working.
+- A config that isn't valid JSON leaves the file as it was. A typo while
+  editing doesn't wipe working shortcuts.
+- Hidden inputs keep their shortcut. Hiding only affects the popup list.
+- The shortcuts go through the running shell, so the plugin has to be enabled
+  for them to work.
 
 ### Hacking on it
 
