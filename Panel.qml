@@ -171,7 +171,7 @@ Panel {
     : Model.hyprConflicts(hyprBindsText, editBind, Model.describeBind(editName))
   readonly property var editInputConflicts: Model.inputConflicts(inputs, editCode, editBind)
   readonly property string editProblem: {
-    if (editKey !== "" && editMods.length === 0) return "Add at least one modifier, so the key keeps working everywhere else."
+    if (editKey !== "" && editMods.length === 0) return "Hold at least one of Super, Ctrl, Alt or Shift, so the key keeps working everywhere else."
     return ""
   }
   readonly property bool editHasConflict: editProblem === "" && editBind !== ""
@@ -216,14 +216,6 @@ Panel {
     root.releaseSubmap()
     root.editCode = ""
     keyCatcher.forceActiveFocus()
-  }
-
-  function toggleMod(mod) {
-    var next = root.editMods.slice()
-    var at = next.indexOf(mod)
-    if (at === -1) next.push(mod)
-    else next.splice(at, 1)
-    root.editMods = Model.parseBind(Model.formatBind(next, "")).mods
   }
 
   function startRecording() {
@@ -294,14 +286,13 @@ Panel {
       root.recordError = "That key can't be used here. Try a letter, digit or F-key."
       return
     }
-    // The held modifiers are the combination. A bare key keeps the toggles,
-    // so a modifier set can also be clicked together first.
+    // The held modifiers are the combination.
     var held = []
     if (event.modifiers & Qt.ControlModifier) held.push("CTRL")
     if (event.modifiers & Qt.ShiftModifier) held.push("SHIFT")
     if (event.modifiers & Qt.AltModifier) held.push("ALT")
     if (event.modifiers & Qt.MetaModifier) held.push("SUPER")
-    if (held.length > 0) root.editMods = Model.parseBind(Model.formatBind(held, "")).mods
+    root.editMods = Model.parseBind(Model.formatBind(held, "")).mods
     root.editKey = name
     stopRecording()
   }
@@ -337,6 +328,7 @@ Panel {
     target: root.ipcTarget
 
     function set(input: string): string { return root.setIpc(input) }
+    function settings(): void { root.open(); root.openSettings(true) }
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }
@@ -707,32 +699,46 @@ Panel {
             foreground: root.bar.foreground
           }
 
-          PanelSectionHeader {
-            text: "INPUT " + root.editCode
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          FieldLabel { text: "Name" }
-
-          TextField {
-            id: nameField
-            width: parent.width
-            text: root.editDraftName
-            placeholderText: Model.defaultNameFor(root.editCode)
-            foreground: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.body
-            onTextEdited: root.editDraftName = text
-            onAccepted: keyCatcher.forceActiveFocus()
-            Keys.onEscapePressed: function(event) {
-              root.editDraftName = root.editName
-              keyCatcher.forceActiveFocus()
-              event.accepted = true
+          FieldRow {
+            label: "Port"
+            Text {
+              text: Model.defaultNameFor(root.editCode) + "  ·  " + root.editCode
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
             }
           }
 
-          FieldLabel { text: "Shortcut" }
+          FieldRow {
+            label: "Name"
+            TextField {
+              id: nameField
+              width: column.width - Style.space(80)
+              text: root.editDraftName
+              placeholderText: Model.defaultNameFor(root.editCode)
+              foreground: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              onTextEdited: root.editDraftName = text
+              onAccepted: keyCatcher.forceActiveFocus()
+              Keys.onEscapePressed: function(event) {
+                root.editDraftName = root.editName
+                keyCatcher.forceActiveFocus()
+                event.accepted = true
+              }
+            }
+          }
+
+          FieldRow {
+            label: "Shortcut"
+            Text {
+              text: root.recording ? "press keys…" : (root.editBind === "" ? "none" : root.editBind)
+              color: root.recording || root.editBind === "" ? Qt.darker(root.bar.foreground, 1.4) : root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: root.editBind !== "" && !root.recording
+            }
+          }
 
           // Catches the key press while recording. PanelKeyCatcher is blocked
           // meanwhile, so keys reach this item instead of moving the cursor.
@@ -747,59 +753,14 @@ Panel {
             }
           }
 
-          Flow {
-            width: parent.width
-            spacing: Style.space(4)
-
-            Repeater {
-              model: Model.MODIFIERS
-
-              Button {
-                required property string modelData
-                text: modelData
-                bordered: true
-                selected: root.editMods.indexOf(modelData) !== -1
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                fontSize: Style.font.caption
-                horizontalPadding: Style.space(6)
-                onClicked: root.toggleMod(modelData)
-              }
-            }
-
-            Button {
-              text: root.recording ? (root.editKey === "" ? "press keys…" : root.editKey + " · press keys…")
-                : (root.editKey === "" ? "record" : root.editKey)
-              tooltipText: "Click, then press the combination. Backspace clears it."
-              bordered: true
-              selected: root.recording
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              horizontalPadding: Style.space(6)
-              onClicked: root.recording ? root.stopRecording() : root.startRecording()
-            }
-
-            Button {
-              visible: root.editKey !== "" && !root.recording
-              text: "clear"
-              tooltipText: "No shortcut for this input"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              horizontalPadding: Style.space(6)
-              onClicked: root.editKey = ""
-            }
-          }
-
           Text {
             width: parent.width
             text: root.recordError !== "" ? root.recordError
               : root.recording ? "Press the whole combination. Your other shortcuts are paused meanwhile."
               : root.editProblem !== "" ? root.editProblem
-              : root.editHasConflict ? root.editBind + ": " + root.editConflictText
-              : root.editBind === "" ? "No shortcut."
-              : root.editBind + " is free."
+              : root.editHasConflict ? root.editConflictText + " Save overrides it."
+              : ""
+            visible: text !== ""
             color: root.recordError !== "" || (root.editProblem !== "" && !root.recording) || root.editHasConflict
               ? (root.bar ? root.bar.urgent : Color.foreground)
               : Qt.darker(root.bar.foreground, 1.4)
@@ -822,40 +783,40 @@ Panel {
             spacing: Style.space(4)
 
             Button {
-              visible: !root.editHasConflict
-              text: "Save"
+              text: "Clear"
+              tooltipText: "No shortcut for this input"
+              bordered: true
+              enabled: root.editKey !== "" && !root.recording
+              opacity: enabled ? 1 : 0.45
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.editKey = ""
+            }
+
+            Button {
+              text: root.recording ? "Stop" : "Record"
+              tooltipText: "Click, then press the combination"
+              bordered: true
+              selected: root.recording
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.recording ? root.stopRecording() : root.startRecording()
+            }
+
+            // On a clash Save takes the combination over: the other input
+            // loses it, another Hyprland binding is switched off.
+            Button {
+              text: root.editHasConflict ? "Override" : "Save"
+              tooltipText: root.editHasConflict ? "Use the shortcut here anyway" : ""
               bordered: true
               enabled: root.editProblem === "" && !root.recording
               opacity: enabled ? 1 : 0.45
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               fontSize: Style.font.caption
-              onClicked: root.saveInput(false)
-            }
-
-            // A clash offers both ways out: record something else, or take
-            // the combination over.
-            Button {
-              visible: root.editHasConflict
-              text: "Pick another"
-              bordered: true
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.startRecording()
-            }
-
-            Button {
-              visible: root.editHasConflict
-              text: "Override"
-              tooltipText: root.editInputConflicts.length > 0 && root.editHyprConflicts.length === 0
-                ? "Move the shortcut here; the other input loses it"
-                : "Use it here anyway; the other binding is switched off"
-              bordered: true
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.caption
-              onClicked: root.saveInput(true)
+              onClicked: root.saveInput(root.editHasConflict)
             }
 
             Button {
@@ -949,7 +910,16 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: inputRow.isActive
         elide: Text.ElideRight
-        width: parent.width - Style.space(20) - codeLabel.implicitWidth - Style.space(16)
+        width: parent.width - Style.space(20) - bindLabel.implicitWidth - codeLabel.implicitWidth - Style.space(24)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: bindLabel
+        text: inputRow.entry.bind || ""
+        color: Qt.darker(root.bar.foreground, 1.15)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
         anchors.verticalCenter: parent.verticalCenter
       }
 
@@ -999,15 +969,30 @@ Panel {
       anchors.rightMargin: Style.space(6)
       spacing: Style.space(8)
 
-      Text {
-        text: shortcutRow.entry.hidden ? shortcutRow.entry.name + "  (hidden)" : shortcutRow.entry.name
-        color: shortcutRow.entry.hidden ? Qt.darker(root.bar.foreground, 1.4) : root.bar.foreground
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: shortcutRow.current
-        elide: Text.ElideRight
+      // Name on top, the port it stands for underneath, so a renamed input
+      // stays recognisable.
+      Column {
         width: parent.width - shortcutLabel.implicitWidth - Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          width: parent.width
+          text: shortcutRow.entry.name + (shortcutRow.entry.hidden ? "  (hidden)" : "")
+          color: shortcutRow.entry.hidden ? Qt.darker(root.bar.foreground, 1.4) : root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: shortcutRow.current
+          elide: Text.ElideRight
+        }
+
+        Text {
+          width: parent.width
+          text: Model.defaultNameFor(shortcutRow.entry.code) + "  ·  " + shortcutRow.entry.code
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
       }
 
       Text {
@@ -1032,9 +1017,28 @@ Panel {
     }
   }
 
-  component FieldLabel: Text {
-    color: Qt.darker(root.bar.foreground, 1.4)
-    font.family: root.bar.fontFamily
-    font.pixelSize: Style.font.caption
+  // A labelled line in the input editor: fixed-width label, then the value.
+  component FieldRow: Row {
+    property string label: ""
+    default property alias content: valueSlot.data
+    width: column.width
+    height: Math.max(labelText.implicitHeight, valueSlot.childrenRect.height)
+    spacing: Style.space(8)
+
+    Text {
+      id: labelText
+      width: Style.space(72)
+      anchors.verticalCenter: parent.verticalCenter
+      text: parent.label
+      color: Qt.darker(root.bar.foreground, 1.4)
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+
+    Item {
+      id: valueSlot
+      width: parent.width - labelText.width - parent.spacing
+      height: childrenRect.height
+    }
   }
 }

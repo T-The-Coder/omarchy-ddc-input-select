@@ -137,7 +137,7 @@ omarchy plugin add https://github.com/MattFlower/omarchy-ddc-input-select.git --
 ```
 
 The widget puts a 󰍹 icon in the bar. Left click opens a popup listing your
-inputs with the active one checked; click or arrow-and-Enter to switch. Middle
+inputs with the active one checked and each one's shortcut; click or arrow-and-Enter to switch. Middle
 click re-detects. Scrolling the icon nudges monitor brightness (VCP `0x10`),
 carrying over the `on-scroll` bindings from the old waybar module.
 
@@ -185,6 +185,8 @@ omarchy-shell ddc-input set "Work Laptop"
 
 It prints `ok`, `busy` (another DDC call is still running) or `unknown input`.
 
+`omarchy-shell ddc-input settings` opens the popup straight on its Settings page.
+
 ### Names, visibility and shortcuts
 
 The gear in the popup header (or `s`) opens the **Settings** page in place of
@@ -192,31 +194,35 @@ the input list. It lists every input, hidden ones included, with its shortcut.
 Pick one by click or arrow-and-Enter to edit it below the list. The arrow
 button or Escape goes back.
 
-The editor has three parts, saved together with **Save**:
+The editor shows:
 
+- **Port**: the input as the monitor knows it (`DisplayPort-1 · 0x0f`), so a
+  renamed input stays recognisable. The list shows it under each name too.
 - **Name**: what the popup and the shortcut descriptions call the input.
   Clearing it brings back the standard name.
-- **Shortcut**: click **record** and press the whole combination, e.g.
-  `Ctrl+Shift+2`. **clear** removes the shortcut.
+- **Shortcut**: the current combination, or `none`.
+- **Show in the input list**: off hides the input from the popup's list
+  (`"hidden": true`). It keeps its shortcut.
+
+and four buttons:
+
+- **Clear** removes the shortcut.
+- **Record** listens for a new one: press the whole combination, e.g.
+  `Ctrl+Shift+2`. It needs at least one of Super, Ctrl, Alt or Shift.
   - While it listens, Hyprland is switched into an empty submap, so none of
     your shortcuts fire and the combination reaches the popup. That includes
     one that is bound right now, such as the input's current shortcut.
   - The submap is left as soon as a key is recorded, when the editor or
     popup closes, and after 20 seconds at the latest. `Ctrl+Alt+Shift+F12`
     leaves it by hand, should the shell ever go away mid-recording.
-  - The `SUPER`/`CTRL`/`ALT`/`SHIFT` toggles adjust the modifiers afterwards.
-    A key pressed without modifiers keeps the toggled ones.
   - Backspace clears the key, and Escape stops listening.
-  - A shortcut needs at least one modifier, or Save stays disabled.
-  - If the combination is already in use, the editor says by what, and
-    offers two ways out instead of Save:
-    - **Pick another** listens again.
-    - **Override** takes the combination over. Another input that had it
-      loses it. A Hyprland binding (from `hyprctl binds`) is switched off by
-      an `hl.unbind()` in the generated module, stored as `"override": true`
-      on the input.
-- **Show in the input list**: off hides the input from the popup's list
-  (`"hidden": true`). It keeps its shortcut.
+- **Save** writes name, shortcut and visibility together. If the combination
+  is already in use, the editor says by what, and the button reads
+  **Override**: another input that had the shortcut loses it, and a Hyprland
+  binding (from `hyprctl binds`) is switched off by an `hl.unbind()` in the
+  generated module, stored as `"override": true` on the input. To pick
+  something else instead, Record again.
+- **Cancel** closes the editor without saving.
 
 Saving writes into `inputs.json`, keeping everything else in the file. An
 input that isn't listed there yet is added. A name equal to the standard one
