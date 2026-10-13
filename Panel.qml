@@ -144,6 +144,114 @@ Panel {
     if (!reloadProc.running) reloadProc.running = true
   }
 
+  // --- shortcut editor -------------------------------------------------------
+  //
+  // Opened from an input row's shortcut chip. Edits modifier toggles plus one
+  // recorded key (see Model.js for why modifiers aren't recorded), and saves
+  // the result as that input's "bind" in inputs.json — which the FileView
+  // above then turns into the Hyprland module.
+  property string editCode: ""
+  property string editName: ""
+  property string editOriginal: ""
+  property var editMods: []
+  property string editKey: ""
+  property bool recording: false
+  property string recordError: ""
+  property string hyprBindsText: ""
+
+  readonly property bool editing: editCode !== ""
+  readonly property string editBind: editKey === "" ? "" : Model.formatBind(editMods, editKey)
+  readonly property var editHyprConflicts: editBind === "" ? []
+    : Model.hyprConflicts(hyprBindsText, editBind, Model.describeBind(editName))
+  readonly property var editInputConflicts: Model.inputConflicts(inputs, editCode, editBind)
+  readonly property string editProblem: {
+    if (editKey === "") return "Pick a key."
+    if (editMods.length === 0) return "Add at least one modifier, so the key keeps working everywhere else."
+    if (editInputConflicts.length > 0) return "Already the shortcut for " + editInputConflicts.join(", ") + "."
+    return ""
+  }
+
+  function openEditor(entry) {
+    root.editCode = entry.code
+    root.editName = entry.name
+    root.editOriginal = entry.bind || ""
+    var parsed = Model.parseBind(entry.bind)
+    root.editMods = parsed.mods
+    root.editKey = parsed.key
+    root.recordError = ""
+    root.errorText = ""
+    // Ask Hyprland once per edit what is already bound, for the clash warning.
+    if (!bindsProc.running) bindsProc.running = true
+    root.startRecording()
+  }
+
+  function closeEditor() {
+    root.recording = false
+    root.editCode = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function toggleMod(mod) {
+    var next = root.editMods.slice()
+    var at = next.indexOf(mod)
+    if (at === -1) next.push(mod)
+    else next.splice(at, 1)
+    root.editMods = Model.parseBind(Model.formatBind(next, "")).mods
+  }
+
+  function startRecording() {
+    root.recordError = ""
+    root.recording = true
+    recorder.forceActiveFocus()
+  }
+
+  function stopRecording() {
+    root.recording = false
+    keyCatcher.forceActiveFocus()
+  }
+
+  // Bound to the recorder's Keys.onPressed while recording.
+  function recordKey(event) {
+    if (event.key === Qt.Key_Escape) { stopRecording(); return }
+    if (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete) {
+      root.editKey = ""
+      stopRecording()
+      return
+    }
+    // A modifier on its own is someone reaching for a combination; wait for
+    // the key that completes it.
+    if ([Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_Super_L,
+         Qt.Key_Super_R, Qt.Key_AltGr].indexOf(event.key) !== -1) return
+    var name = Model.keyNameFor(event.key, event.nativeScanCode)
+    if (name === "") {
+      root.recordError = "That key can't be used here. Try a letter, digit or F-key."
+      return
+    }
+    // Modifiers held while pressing are taken too, for combinations Hyprland
+    // doesn't already own; the toggles cover the ones it does.
+    var held = root.editMods.slice()
+    if (event.modifiers & Qt.ControlModifier) held.push("CTRL")
+    if (event.modifiers & Qt.ShiftModifier) held.push("SHIFT")
+    if (event.modifiers & Qt.AltModifier) held.push("ALT")
+    if (event.modifiers & Qt.MetaModifier) held.push("SUPER")
+    root.editMods = Model.parseBind(Model.formatBind(held, "")).mods
+    root.editKey = name
+    stopRecording()
+  }
+
+  function saveBind(bind) {
+    var text = Model.configWithBind(configFile.loaded ? configFile.text() : "",
+      root.editCode, root.editName, bind)
+    if (text === "") {
+      root.errorText = "Can't save while " + root.configPath + " isn't valid JSON."
+      return
+    }
+    saveProc.pendingText = text
+    saveProc.command = ["mkdir", "-p", Model.parentDir(root.configPath)]
+    saveProc.running = true
+    closeEditor()
+  }
+
   IpcHandler {
     target: root.ipcTarget
 
@@ -201,7 +309,11 @@ Panel {
   // Park the cursor on the active input each time the panel opens, so Enter
   // without any arrow key is a no-op rather than a surprise switch.
   onOpenedChanged: {
-    if (!opened) return
+    if (!opened) {
+      root.recording = false
+      root.editCode = ""
+      return
+    }
     root.cursorActive = false
     root.errorText = ""
     for (var i = 0; i < rows.length; i++) {
@@ -269,6 +381,36 @@ Panel {
     onLoaded: root.hyprUserText = text()
     onLoadFailed: root.hyprUserText = ""
     onFileChanged: reload()
+  }
+
+  Process {
+    id: bindsProc
+    command: ["hyprctl", "binds", "-j"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.hyprBindsText = text
+    }
+    stderr: StdioCollector { waitForEnd: true }
+  }
+
+  // Creates the config directory, then writes. Applies the parsed result
+  // directly instead of waiting for the file watcher, so the new shortcut is
+  // live even if the watcher doesn't report our own write.
+  Process {
+    id: saveProc
+    property string pendingText: ""
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.errorText = "could not create " + Model.parentDir(root.configPath)
+        return
+      }
+      configFile.setText(saveProc.pendingText)
+      root.configInputs = Model.parseConfig(saveProc.pendingText)
+      root.configBroken = false
+      root.configSettled = true
+      root.syncBindings()
+    }
   }
 
   Process {
@@ -365,18 +507,23 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(300))
+    contentWidth: panel.fittedContentWidth(Style.space(340))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.recording
+      onTextKey: function(t) {
+        if (t !== "b" || !root.cursorActive || root.editing) return
+        if (root.cursorIndex >= 0 && root.cursorIndex < root.rows.length) root.openEditor(root.rows[root.cursorIndex])
+      }
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy !== 0 ? dy : dx)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
+      onCloseRequested: root.editing ? root.closeEditor() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
@@ -467,6 +614,117 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
+        Column {
+          visible: root.editing
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSeparator {
+            foreground: root.bar.foreground
+          }
+
+          PanelSectionHeader {
+            text: "SHORTCUT · " + root.editName.toUpperCase()
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          // Catches the key press while recording. PanelKeyCatcher is blocked
+          // meanwhile, so keys reach this item instead of moving the cursor.
+          Item {
+            id: recorder
+            width: 0
+            height: 0
+            Keys.onPressed: function(event) {
+              if (!root.recording) return
+              root.recordKey(event)
+              event.accepted = true
+            }
+          }
+
+          Flow {
+            width: parent.width
+            spacing: Style.space(4)
+
+            Repeater {
+              model: Model.MODIFIERS
+
+              Button {
+                required property string modelData
+                text: modelData
+                bordered: true
+                selected: root.editMods.indexOf(modelData) !== -1
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                fontSize: Style.font.caption
+                horizontalPadding: Style.space(6)
+                onClicked: root.toggleMod(modelData)
+              }
+            }
+
+            Button {
+              text: root.recording ? (root.editKey === "" ? "press a key…" : root.editKey + " · press a key…")
+                : (root.editKey === "" ? "key" : root.editKey)
+              tooltipText: "Click, then press the key alone. Backspace clears it."
+              bordered: true
+              selected: root.recording
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              horizontalPadding: Style.space(6)
+              onClicked: root.recording ? root.stopRecording() : root.startRecording()
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: root.recordError !== "" ? root.recordError
+              : root.editProblem !== "" ? root.editProblem
+              : root.editHyprConflicts.length > 0
+                ? "Hyprland already uses " + root.editBind + " for: " + root.editHyprConflicts.join(", ") + "."
+              : root.editBind
+            color: root.recordError !== "" || root.editProblem !== "" || root.editHyprConflicts.length > 0
+              ? (root.bar ? root.bar.urgent : Color.foreground)
+              : Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            spacing: Style.space(4)
+
+            Button {
+              text: "Save"
+              bordered: true
+              enabled: root.editProblem === ""
+              opacity: enabled ? 1 : 0.45
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.saveBind(root.editBind)
+            }
+
+            Button {
+              visible: root.editOriginal !== ""
+              text: "Remove"
+              bordered: true
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.saveBind("")
+            }
+
+            Button {
+              text: "Cancel"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.closeEditor()
+            }
+          }
+        }
+
         Text {
           visible: root.hasBindings && !root.bindingsRequired
           width: parent.width
@@ -548,14 +806,25 @@ Panel {
         font.pixelSize: Style.font.body
         font.bold: inputRow.isActive
         elide: Text.ElideRight
-        width: parent.width - Style.space(20) - codeLabel.implicitWidth - Style.space(16)
+        width: parent.width - Style.space(20) - bindChip.implicitWidth - codeLabel.implicitWidth - Style.space(24)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      // Click target for the shortcut editor: the shortcut itself, or a
+      // keyboard glyph when there is none yet.
+      Text {
+        id: bindChip
+        text: inputRow.entry.bind ? inputRow.entry.bind : "󰌌"
+        color: root.editCode === inputRow.entry.code ? root.bar.foreground
+          : Qt.darker(root.bar.foreground, inputRow.entry.bind ? 1.15 : 1.6)
+        font.family: root.bar.fontFamily
+        font.pixelSize: inputRow.entry.bind ? Style.font.caption : Style.font.body
         anchors.verticalCenter: parent.verticalCenter
       }
 
       Text {
         id: codeLabel
-        text: (inputRow.entry.bind ? inputRow.entry.bind + "  " : "")
-          + (inputRow.entry.unsupported ? inputRow.entry.code + " ?" : inputRow.entry.code)
+        text: inputRow.entry.unsupported ? inputRow.entry.code + " ?" : inputRow.entry.code
         color: Qt.darker(root.bar.foreground, 1.4)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
@@ -571,7 +840,14 @@ Panel {
         root.cursorActive = true
         root.cursorIndex = inputRow.rowIndex
       }
-      onClicked: root.applyInput(inputRow.entry.code)
+      onClicked: function(mouse) {
+        // The row's own MouseArea sits on top of everything in it, so the
+        // shortcut chip is hit-tested here rather than with its own area.
+        var p = mapToItem(bindChip, mouse.x, mouse.y)
+        var slop = Style.space(6)
+        if (p.x >= -slop && p.x <= bindChip.width + slop) root.openEditor(inputRow.entry)
+        else root.applyInput(inputRow.entry.code)
+      }
     }
   }
 }

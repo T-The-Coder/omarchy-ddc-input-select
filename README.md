@@ -188,8 +188,28 @@ It prints `ok`, `busy` (another DDC call is still running) or `unknown input`.
 
 ### Per-input shortcuts
 
-Add a `"bind"` to any input in `inputs.json`, in the same key syntax Omarchy's
-`bindings.lua` uses:
+Every input row in the popup has a shortcut chip next to its code: the shortcut
+itself, or a 󰌌 keyboard glyph if it has none yet. Click it (or press `b` on the
+row under the keyboard cursor) to open the shortcut editor below the list:
+
+- Toggle the modifiers `SUPER`, `CTRL`, `ALT` and `SHIFT`, then press the key
+  on its own. The editor starts out listening, so it's usually click the chip,
+  press `2`, Save.
+  - Modifiers are toggles, not recorded, because Hyprland consumes a
+    combination that is already bound (such as the input's current shortcut)
+    before the popup sees it. Modifiers you do hold while pressing are picked up.
+  - Backspace clears the key, and Escape stops listening.
+- Save is disabled while the shortcut has no modifier, or another input
+  already uses it.
+- If Hyprland already binds the combination to something else (from
+  `hyprctl binds`), the editor names it. Saving is still allowed.
+- Save writes the shortcut into `inputs.json`. An input that isn't listed
+  there yet is added under the name the popup shows. Remove deletes the
+  shortcut.
+
+Under the hood each shortcut is a `"bind"` on its input in `inputs.json`, in
+the same key syntax Omarchy's `bindings.lua` uses, so it can also be written
+by hand:
 
 ```json
 {
@@ -210,8 +230,7 @@ The plugin turns these into `~/.config/hypr/ddc-input-select.lua`, one
 require("hypr.ddc-input-select")
 ```
 
-Until that line is there, the popup says so. The popup also shows each
-input's shortcut next to its code.
+Until that line is there, the popup says so.
 
 - The plugin writes only that one file and never touches `bindings.lua` itself.
   Nothing is created until the first `bind` exists.

@@ -277,7 +277,7 @@ function bindingsLua(inputs, ipcTarget) {
   for (var i = 0; i < all.length; i++) {
     if (!all[i].bind) continue
     lines.push("o.bind(" + luaString(all[i].bind) + ", "
-      + luaString("Monitor input: " + all[i].name) + ", "
+      + luaString(describeBind(all[i].name)) + ", "
       + luaString("omarchy-shell -q " + ipcTarget + " set " + all[i].code) + ")")
     count++
   }
@@ -287,6 +287,165 @@ function bindingsLua(inputs, ipcTarget) {
 
 function hasBindings(inputs) {
   return (inputs || []).some(function(entry) { return !!entry.bind })
+}
+
+// --- shortcut editor ---------------------------------------------------------
+//
+// The popup edits a bind as modifier toggles plus one key. Modifiers are
+// toggles rather than recorded because Hyprland consumes any combination that
+// is already bound before the popup ever sees it — and the input's current
+// shortcut is exactly such a combination. A bare key press reaches the popup.
+
+var MODIFIERS = ["SUPER", "CTRL", "ALT", "SHIFT"]
+var MODMASK = { "SHIFT": 1, "CTRL": 4, "ALT": 8, "SUPER": 64 }
+var MODIFIER_ALIASES = {
+  "SUPER": "SUPER", "MOD4": "SUPER", "WIN": "SUPER", "LOGO": "SUPER", "META": "SUPER",
+  "CTRL": "CTRL", "CONTROL": "CTRL",
+  "ALT": "ALT", "MOD1": "ALT",
+  "SHIFT": "SHIFT"
+}
+
+// "SHIFT + CTRL + 1" -> { mods: ["CTRL", "SHIFT"], key: "1" }. Modifiers come
+// back in MODIFIERS order so two spellings of one shortcut compare equal.
+function parseBind(bind) {
+  var tokens = normalizeBind(bind).split("+")
+  var mods = []
+  var key = ""
+  for (var i = 0; i < tokens.length; i++) {
+    var token = tokens[i].trim()
+    if (token === "") continue
+    var mod = MODIFIER_ALIASES[token.toUpperCase()]
+    if (mod) { if (mods.indexOf(mod) === -1) mods.push(mod) }
+    else key = token.toUpperCase()
+  }
+  mods.sort(function(a, b) { return MODIFIERS.indexOf(a) - MODIFIERS.indexOf(b) })
+  return { mods: mods, key: key }
+}
+
+function formatBind(mods, key) {
+  var ordered = MODIFIERS.filter(function(mod) { return (mods || []).indexOf(mod) !== -1 })
+  if (key) ordered.push(String(key).toUpperCase())
+  return ordered.join(" + ")
+}
+
+function canonicalBind(bind) {
+  var parsed = parseBind(bind)
+  return parsed.key === "" ? "" : formatBind(parsed.mods, parsed.key)
+}
+
+// Qt key codes, spelled out because Model.js stays free of QML types.
+var QT_KEYS = {
+  0x20: "SPACE", 0x27: "APOSTROPHE", 0x2c: "COMMA", 0x2d: "MINUS", 0x2e: "PERIOD",
+  0x2f: "SLASH", 0x3b: "SEMICOLON", 0x3d: "EQUAL", 0x5b: "BRACKETLEFT",
+  0x5c: "BACKSLASH", 0x5d: "BRACKETRIGHT", 0x60: "GRAVE",
+  0x01000004: "RETURN", 0x01000005: "RETURN", 0x01000006: "INSERT",
+  0x01000009: "PRINT", 0x01000010: "HOME", 0x01000011: "END",
+  0x01000012: "LEFT", 0x01000013: "UP", 0x01000014: "RIGHT", 0x01000015: "DOWN",
+  0x01000016: "PRIOR", 0x01000017: "NEXT"
+}
+
+// Hyprland key name for a key press in the popup, or "" if it can't be bound.
+// The number row is read from the scan code: with Shift held, or on layouts
+// such as AZERTY, Qt reports the symbol on the key rather than the digit,
+// while Hyprland binds "1" by the key itself. xkb keycodes 10..19 are 1..0.
+function keyNameFor(qtKey, scanCode) {
+  if (scanCode >= 10 && scanCode <= 19) return String((scanCode - 9) % 10)
+  if (qtKey >= 0x30 && qtKey <= 0x39) return String.fromCharCode(qtKey)
+  if (qtKey >= 0x41 && qtKey <= 0x5a) return String.fromCharCode(qtKey)
+  if (qtKey >= 0x01000030 && qtKey <= 0x01000052) return "F" + (qtKey - 0x01000030 + 1)
+  return QT_KEYS[qtKey] || ""
+}
+
+function modsFromMask(mask) {
+  var out = []
+  for (var i = 0; i < MODIFIERS.length; i++) {
+    if (mask & MODMASK[MODIFIERS[i]]) out.push(MODIFIERS[i])
+  }
+  return out
+}
+
+// What else already answers to this shortcut, from `hyprctl binds -j`.
+// `ownDescription` is the description this input's own bind gets, so the
+// shortcut being edited — whether from our module or hand-written with the
+// same wording — doesn't count as a clash with itself.
+function hyprConflicts(bindsJson, bind, ownDescription) {
+  var wanted = canonicalBind(bind)
+  if (wanted === "") return []
+  var list
+  try { list = JSON.parse(bindsJson) } catch (e) { return [] }
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    if (!entry || entry.mouse || entry.submap) continue
+    if (formatBind(modsFromMask(entry.modmask || 0), entry.key) !== wanted) continue
+    var label = entry.description || (entry.dispatcher + " " + (entry.arg || "")).trim()
+    if (label === ownDescription) continue
+    if (out.indexOf(label) === -1) out.push(label)
+  }
+  return out
+}
+
+// Names of other configured inputs that already use this shortcut.
+function inputConflicts(inputs, code, bind) {
+  var wanted = canonicalBind(bind)
+  if (wanted === "") return []
+  return (inputs || []).filter(function(entry) {
+    return entry.code !== code && entry.bind && canonicalBind(entry.bind) === wanted
+  }).map(function(entry) { return entry.name })
+}
+
+function describeBind(name) {
+  return "Monitor input: " + name
+}
+
+// Write one input's bind into the config text, keeping everything else the
+// user wrote: other entries, their order, unknown keys. An input that isn't
+// in the config yet is appended under the name the popup shows. An empty
+// bind removes the field. Returns "" if the existing text isn't a config this
+// can safely rewrite — never guess over a file the user is mid-way through.
+function configWithBind(text, code, name, bind) {
+  var parsed = { inputs: [] }
+  if (text && String(text).trim() !== "") {
+    try { parsed = JSON.parse(text) } catch (e) { return "" }
+    if (!parsed || !Array.isArray(parsed.inputs)) return ""
+  }
+  var wanted = normalizeCode(code)
+  var found = false
+  for (var i = 0; i < parsed.inputs.length; i++) {
+    var entry = parsed.inputs[i]
+    if (!entry || normalizeCode(entry.code) !== wanted) continue
+    found = true
+    if (bind) entry.bind = bind
+    else delete entry.bind
+  }
+  if (!found && bind) parsed.inputs.push({ code: wanted, name: name, bind: bind })
+  return renderConfig(parsed)
+}
+
+// One input per line, like the seed, so a file the popup touched still reads
+// like one a person wrote.
+function renderConfig(parsed) {
+  var entries = parsed.inputs.map(function(entry) {
+    if (!entry || typeof entry !== "object") return "    " + JSON.stringify(entry)
+    return "    { " + Object.keys(entry).map(function(key) {
+      return JSON.stringify(key) + ": " + JSON.stringify(entry[key])
+    }).join(", ") + " }"
+  })
+  var lines = ["{"]
+  var keys = Object.keys(parsed)
+  for (var k = 0; k < keys.length; k++) {
+    var last = k === keys.length - 1 ? "" : ","
+    if (keys[k] === "inputs") {
+      lines.push('  "inputs": [')
+      if (entries.length > 0) lines.push(entries.join(",\n"))
+      lines.push("  ]" + last)
+    } else {
+      lines.push("  " + JSON.stringify(keys[k]) + ": " + JSON.stringify(parsed[keys[k]]) + last)
+    }
+  }
+  lines.push("}")
+  return lines.join("\n") + "\n"
 }
 
 // Render a config file from a merged input list. Used to seed a first config

@@ -11,7 +11,9 @@ const EXPORTS = [
   "normalizeCode", "parseConfig", "configIsMalformed", "visibleInputs",
   "parseCurrentCode", "parseCapabilities", "mergeInputs", "labelFor",
   "defaultNameFor", "ddcutilArgs", "moveIndex", "seedConfigJson", "parentDir",
-  "resolveInput", "normalizeBind", "bindingsLua", "hasBindings"
+  "resolveInput", "normalizeBind", "bindingsLua", "hasBindings",
+  "parseBind", "formatBind", "canonicalBind", "keyNameFor", "modsFromMask",
+  "hyprConflicts", "inputConflicts", "configWithBind"
 ]
 
 const M = {}
@@ -188,6 +190,68 @@ eq(M.resolveInput([], "0x11"), "", "resolve: unknown code is left to the caller"
 eq(M.resolveInput(bound, ""), "", "resolve: empty")
 eq(M.resolveInput([{ code: "0x0a", name: "12" }, { code: "0x12", name: "x" }], "12"), "0x12",
    "resolve: a code wins over a name that looks like one")
+
+// --- shortcut editor -------------------------------------------------------
+eq(M.parseBind("SHIFT + CTRL + 1"), { mods: ["CTRL", "SHIFT"], key: "1" },
+   "editor: parse orders modifiers")
+eq(M.parseBind("control+mod4+h"), { mods: ["SUPER", "CTRL"], key: "H" },
+   "editor: parse aliases and lowercase")
+eq(M.parseBind(""), { mods: [], key: "" }, "editor: parse empty")
+eq(M.formatBind(["SHIFT", "CTRL"], "1"), "CTRL + SHIFT + 1", "editor: format in fixed order")
+eq(M.formatBind(["SUPER"], ""), "SUPER", "editor: format without key")
+eq(M.canonicalBind("SHIFT + CTRL + 1"), M.canonicalBind("ctrl + shift + 1"),
+   "editor: two spellings, one shortcut")
+eq(M.canonicalBind("SHIFT"), "", "editor: modifiers alone are no shortcut")
+
+eq(M.keyNameFor(0x21, 10), "1", "key: Shift+1 reads the digit from the scan code")
+eq(M.keyNameFor(0x26, 19), "0", "key: scan code 19 is 0")
+eq(M.keyNameFor(0x33, 0), "3", "key: digit without scan code")
+eq(M.keyNameFor(0x48, 43), "H", "key: letter")
+eq(M.keyNameFor(0x01000030, 67), "F1", "key: F1")
+eq(M.keyNameFor(0x01000004, 36), "RETURN", "key: named key")
+eq(M.keyNameFor(0xdc, 34), "", "key: unknown is refused")
+
+eq(M.modsFromMask(5), ["CTRL", "SHIFT"], "mask: 5 is CTRL+SHIFT")
+eq(M.modsFromMask(64 | 8), ["SUPER", "ALT"], "mask: SUPER+ALT")
+
+const HYPR_BINDS = JSON.stringify([
+  { modmask: 5, key: "1", description: "Monitor input: VGA", dispatcher: "__lua", arg: "1", mouse: false, submap: "" },
+  { modmask: 64, key: "RETURN", description: "Terminal", dispatcher: "__lua", arg: "2", mouse: false, submap: "" },
+  { modmask: 64, key: "J", description: "", dispatcher: "togglesplit", arg: "", mouse: false, submap: "" },
+  { modmask: 64, key: "mouse:272", description: "Move", dispatcher: "movewindow", arg: "", mouse: true, submap: "" },
+  { modmask: 0, key: "escape", description: "Leave resize", dispatcher: "submap", arg: "reset", mouse: false, submap: "resize" }
+])
+eq(M.hyprConflicts(HYPR_BINDS, "SUPER + RETURN", "Monitor input: HDMI"), ["Terminal"],
+   "conflict: taken by another binding")
+eq(M.hyprConflicts(HYPR_BINDS, "CTRL + SHIFT + 1", "Monitor input: VGA"), [],
+   "conflict: the input's own shortcut is not a clash")
+eq(M.hyprConflicts(HYPR_BINDS, "SHIFT + CTRL + 1", "Monitor input: HDMI"), ["Monitor input: VGA"],
+   "conflict: another input's shortcut is")
+eq(M.hyprConflicts(HYPR_BINDS, "SUPER + J", "x"), ["togglesplit"],
+   "conflict: undescribed binding falls back to its dispatcher")
+eq(M.hyprConflicts(HYPR_BINDS, "ESCAPE", "x"), [], "conflict: submap bindings ignored")
+eq(M.hyprConflicts("not json", "SUPER + J", "x"), [], "conflict: bad JSON is no conflict")
+eq(M.inputConflicts(bound, "0x0f", "CTRL + SHIFT + 1"), ["VGA"], "conflict: between inputs")
+eq(M.inputConflicts(bound, "0x01", "SHIFT + CTRL + 1"), [], "conflict: not with itself")
+
+const userConfig = '{\n  "inputs": [\n    { "code": "0x0F", "name": "Dock", "hidden": false, "note": "mine" },\n    { "code": "0x11", "name": "HDMI", "bind": "SUPER + H" }\n  ],\n  "extra": 1\n}\n'
+const withBind = M.configWithBind(userConfig, "0x0f", "Dock", "CTRL + SHIFT + 2")
+eq(JSON.parse(withBind).inputs[0], { code: "0x0F", name: "Dock", hidden: false, note: "mine", bind: "CTRL + SHIFT + 2" },
+   "write: bind added, other fields kept")
+eq(JSON.parse(withBind).extra, 1, "write: unknown top-level keys kept")
+eq(withBind.split("\n")[2], '    { "code": "0x0F", "name": "Dock", "hidden": false, "note": "mine", "bind": "CTRL + SHIFT + 2" },',
+   "write: one input per line")
+eq(JSON.parse(M.configWithBind(userConfig, "0x11", "HDMI", "")).inputs[1], { code: "0x11", name: "HDMI" },
+   "write: empty bind removes the field")
+eq(JSON.parse(M.configWithBind(userConfig, "0x01", "VGA-1", "CTRL + 1")).inputs[2],
+   { code: "0x01", name: "VGA-1", bind: "CTRL + 1" }, "write: unlisted input is appended")
+eq(JSON.parse(M.configWithBind("", "0x01", "VGA-1", "CTRL + 1")),
+   { inputs: [{ code: "0x01", name: "VGA-1", bind: "CTRL + 1" }] }, "write: no config yet")
+eq(M.configWithBind("{bad", "0x01", "VGA-1", "CTRL + 1"), "", "write: refuses a broken config")
+eq(M.parseConfig(M.configWithBind("", "0x01", 'A "q"', "CTRL + 1"))[0].name, 'A "q"',
+   "write: round-trips through parseConfig")
+eq(JSON.parse(M.configWithBind('{"inputs":[]}', "0x01", "x", "")), { inputs: [] },
+   "write: removing a bind that was never there changes nothing")
 
 // --- misc -----------------------------------------------------------------
 eq(M.labelFor(M.mergeInputs(discovered, configured), "0x13"), "Twilight", "labelFor")
